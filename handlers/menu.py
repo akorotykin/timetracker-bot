@@ -14,6 +14,7 @@ def _main_menu_kb(role: str) -> InlineKeyboardMarkup:
                     InlineKeyboardButton("📝 Внести время", callback_data="menu:log"),
                     InlineKeyboardButton("📁 Мои проекты", callback_data="menu:myprojects"),
                 ],
+                [InlineKeyboardButton("➕ Добавить клиента / проект", callback_data="menu:addcp")],
                 [
                     InlineKeyboardButton("📊 Отчёт", callback_data="menu:report"),
                     InlineKeyboardButton("📤 Выгрузка", callback_data="menu:export"),
@@ -36,6 +37,7 @@ def _main_menu_kb(role: str) -> InlineKeyboardMarkup:
         [
             [InlineKeyboardButton("📝 Внести время", callback_data="menu:log")],
             [InlineKeyboardButton("📁 Мои проекты", callback_data="menu:myprojects")],
+            [InlineKeyboardButton("➕ Добавить клиента / проект", callback_data="menu:addcp")],
             [InlineKeyboardButton("✅ Закрыть проект", callback_data="menu:done")],
         ]
     )

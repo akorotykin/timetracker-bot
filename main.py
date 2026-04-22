@@ -11,6 +11,7 @@ from telegram.ext import Application, ContextTypes
 
 from database import Database
 from handlers import (
+    add_client_project_conversation,
     admin_conversation,
     done_conversation,
     export_conversation,
@@ -63,6 +64,7 @@ async def main() -> None:
     app.add_handler(start_handler)
     app.add_handler(menu_handler)
     app.add_handler(menu_callback_handler)
+    app.add_handler(add_client_project_conversation)
     app.add_handler(log_conversation)
     app.add_handler(myprojects_handler)
     app.add_handler(done_conversation)

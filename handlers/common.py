@@ -98,3 +98,58 @@ def parse_date(s: str) -> dt.date | None:
     except Exception:
         return None
 
+
+_RU_LAT_MAP: dict[str, str] = {
+    "а": "a",
+    "б": "b",
+    "в": "v",
+    "г": "g",
+    "д": "d",
+    "е": "e",
+    "ё": "yo",
+    "ж": "zh",
+    "з": "z",
+    "и": "i",
+    "й": "y",
+    "к": "k",
+    "л": "l",
+    "м": "m",
+    "н": "n",
+    "о": "o",
+    "п": "p",
+    "р": "r",
+    "с": "s",
+    "т": "t",
+    "у": "u",
+    "ф": "f",
+    "х": "kh",
+    "ц": "ts",
+    "ч": "ch",
+    "ш": "sh",
+    "щ": "shch",
+    "ъ": "",
+    "ы": "y",
+    "ь": "",
+    "э": "e",
+    "ю": "yu",
+    "я": "ya",
+}
+
+
+def transliterate(text: str) -> str:
+    out: list[str] = []
+    for ch in text:
+        low = ch.lower()
+        if low in _RU_LAT_MAP:
+            tr = _RU_LAT_MAP[low]
+            out.append(tr if ch.islower() else tr.capitalize())
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def normalize_name(s: str) -> str:
+    s = (s or "").strip().lower()
+    return " ".join(s.split())
+
+
