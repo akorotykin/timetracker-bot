@@ -135,13 +135,13 @@ class Database:
         assert user is not None
         return user
 
- async def maybe_seed_first_admin(self, admin_tg_id: int | None) -> None:
-    if admin_tg_id is None:
-        return
-    await self.execute(
-        "UPDATE users SET role = 'admin' WHERE tg_id = ?;",
-        (admin_tg_id,)
-    )
+    async def maybe_seed_first_admin(self, admin_tg_id: int | None) -> None:
+        if admin_tg_id is None:
+            return
+        await self.execute(
+            "UPDATE users SET role = 'admin' WHERE tg_id = ?;",
+            (admin_tg_id,),
+        )
 
     async def list_users(self) -> list[aiosqlite.Row]:
         return await self.fetchall(
