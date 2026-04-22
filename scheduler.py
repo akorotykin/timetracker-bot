@@ -69,7 +69,7 @@ async def send_daily_kickoff(bot: Bot, db: Database, tz: ZoneInfo) -> None:
     if today.weekday() in {5, 6}:
         return
 
-    await db.mark_sleeping_projects(today=today)
+    # sleeping status removed; keep last_activity_at only
 
     # Monday: ask Friday first, then weekend question later.
     if today.weekday() == 0:
@@ -110,7 +110,7 @@ async def send_daily_repeats(bot: Bot, db: Database, tz: ZoneInfo) -> None:
     if now.time() > dt.time(18, 0):
         return
 
-    await db.mark_sleeping_projects(today=today)
+    # sleeping status removed; keep last_activity_at only
 
     if today.weekday() == 0:
         monday = today

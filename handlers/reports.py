@@ -131,6 +131,7 @@ async def report_dim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         h = float(r["hours"] or 0)
         suffix = ""
         pos_suffix = ""
+        closed_suffix = ""
         if group_by == "user":
             uid = int(r["group_id"])
             reasons = abs_map.get(uid, {})
@@ -146,14 +147,18 @@ async def report_dim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 parts_abs.append(f"{reasons['dayoff']} дн day off")
             if parts_abs:
                 suffix = " (" + ", ".join(parts_abs) + ")"
+        if group_by == "project":
+            status = r["project_status"] if "project_status" in r.keys() else None
+            if str(status or "") == "done":
+                closed_suffix = " [закрыт]"
         if show_money:
             ic = float(r["internal_cost"] or 0)
             ec = float(r["external_cost"] or 0)
             lines.append(
-                f"- {r['label']}{pos_suffix}{suffix}: {h:.2f} ч | себест. {ic:.2f} | клиент. {ec:.2f}"
+                f"- {r['label']}{closed_suffix}{pos_suffix}{suffix}: {h:.2f} ч | себест. {ic:.2f} | клиент. {ec:.2f}"
             )
         else:
-            lines.append(f"- {r['label']}{pos_suffix}{suffix}: {h:.2f} ч")
+            lines.append(f"- {r['label']}{closed_suffix}{pos_suffix}{suffix}: {h:.2f} ч")
     await q.edit_message_text("\n".join(lines))
     await send_main_menu(update, context)
     return ConversationHandler.END

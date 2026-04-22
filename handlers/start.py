@@ -55,8 +55,13 @@ async def save_position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     role = str(context.user_data["reg_role"])
     db = await get_db(context)
     tg_id = await get_me(update)
-    await db.create_user(tg_id=tg_id, name=name, role=role, position=pos)
-    await q.edit_message_text(f"Готово, {name}!")
+    prow = await db.get_position_by_name(pos)
+    i = float(prow["default_internal_rate"] or 0) if prow else 0.0
+    e = float(prow["default_external_rate"] or 0) if prow else 0.0
+    await db.create_user(tg_id=tg_id, name=name, role=role, position=pos, internal_rate=i, external_rate=e)
+    await q.edit_message_text(
+        f"Твоя должность: {pos}\nСтавки установлены автоматически.\nЕсли что-то не так — обратись к админу."
+    )
     await send_main_menu(update, context)
     return ConversationHandler.END
 

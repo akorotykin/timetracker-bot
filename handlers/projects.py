@@ -74,7 +74,8 @@ async def done_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return ConversationHandler.END
     project_id = int(data.split(":")[-1])
     db = await get_db(context)
-    await db.set_project_status(project_id, "done")
+    me = context.user_data["me"]
+    await db.close_project(project_id, closed_by_user_id=me.id)
     await q.edit_message_text("Закрыл.")
     await send_main_menu(update, context)
     return ConversationHandler.END

@@ -17,14 +17,28 @@ from handlers.common import get_db, require_role, yesterday
 from handlers.menu import send_main_menu
 
 
-SELECT_PROJECT, ENTER_HOURS, MORE, SEL_CLIENT, NEW_CLIENT, SEL_CLIENT_PROJECT, NEW_PROJECT, SLEEPING = range(1, 9)
+SELECT_PROJECT, ENTER_HOURS, MORE, SEL_CLIENT, NEW_CLIENT, SEL_CLIENT_PROJECT, NEW_PROJECT = range(1, 8)
 
 
 def _projects_kb(projects: list[dict], add_label: str, done_label: str) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for p in projects:
+        warn = ""
+        try:
+            last = p.get("last_activity_at")
+            if last:
+                last_date = dt.date.fromisoformat(str(last)[:10])
+                if (dt.date.today() - last_date).days >= 14:
+                    warn = " ⚠️ 14+д"
+        except Exception:
+            pass
         rows.append(
-            [InlineKeyboardButton(f"{p['client_name']} / {p['name']}", callback_data=f"log:proj:{p['id']}")]
+            [
+                InlineKeyboardButton(
+                    f"{p['client_name']} / {p['name']}{warn}",
+                    callback_data=f"log:proj:{p['id']}",
+                )
+            ]
         )
     rows.append([InlineKeyboardButton(add_label, callback_data="log:add")])
     rows.append([InlineKeyboardButton(done_label, callback_data="log:done")])
@@ -58,18 +72,6 @@ def _more_kb() -> InlineKeyboardMarkup:
     )
 
 
-def _sleeping_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("Да", callback_data="log:sleep:yes"),
-                InlineKeyboardButton("Нет", callback_data="log:sleep:no"),
-                InlineKeyboardButton("Позже", callback_data="log:sleep:later"),
-            ]
-        ]
-    )
-
-
 async def _load_user_projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> list[dict]:
     db = await get_db(context)
     me = context.user_data["me"]
@@ -83,7 +85,6 @@ async def log_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if "log_date" not in context.user_data:
         context.user_data["log_date"] = yesterday(tz=tz)
     db = await get_db(context)
-    await db.mark_sleeping_projects(today=dt.datetime.now(tz=tz).date())
     projects = await _load_user_projects(update, context)
     if not projects:
         await update.effective_message.reply_text(
@@ -105,7 +106,9 @@ async def select_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data == "log:add":
         return await start_add_project(update, context)
     if data == "log:done":
-        return await maybe_sleeping_start(update, context)
+        await q.edit_message_text("Готово.")
+        await send_main_menu(update, context)
+        return ConversationHandler.END
     if data.startswith("log:proj:"):
         project_id = int(data.split(":")[-1])
         context.user_data["selected_project_id"] = project_id
@@ -149,64 +152,10 @@ async def more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
         return SELECT_PROJECT
     if (q.data or "") == "log:done":
-        return await maybe_sleeping_start(update, context)
+        await q.edit_message_text("Готово.")
+        await send_main_menu(update, context)
+        return ConversationHandler.END
     return MORE
-
-
-async def maybe_sleeping_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    db = await get_db(context)
-    me = context.user_data["me"]
-    sleeping = await db.list_sleeping_projects_for_user(me.id)
-    sleeping_list = [dict(r) for r in sleeping]
-    if update.callback_query:
-        await update.callback_query.edit_message_text("Спасибо! Проверяю спящие проекты…")
-    if not sleeping_list:
-        await update.effective_message.reply_text("Готово.")
-        await send_main_menu(update, context)
-        return ConversationHandler.END
-    context.user_data["sleeping_projects"] = sleeping_list
-    context.user_data["sleeping_idx"] = 0
-    return await ask_sleeping(update, context)
-
-
-async def ask_sleeping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    idx = int(context.user_data["sleeping_idx"])
-    items: list[dict] = context.user_data["sleeping_projects"]
-    if idx >= len(items):
-        await update.effective_message.reply_text("Готово.")
-        await send_main_menu(update, context)
-        return ConversationHandler.END
-    p = items[idx]
-    last = p.get("last_activity_at") or "—"
-    await update.effective_message.reply_text(
-        f"Проект спит 14+ дней: {p['client_name']} / {p['name']}\nПоследняя активность: {last}\nЗавершить?",
-        reply_markup=_sleeping_kb(),
-    )
-    return SLEEPING
-
-
-async def sleeping_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    q = update.callback_query
-    assert q is not None
-    await q.answer()
-    action = (q.data or "").split(":")[-1]
-    idx = int(context.user_data["sleeping_idx"])
-    items: list[dict] = context.user_data["sleeping_projects"]
-    p = items[idx]
-
-    db = await get_db(context)
-    if action == "yes":
-        await db.set_project_status(int(p["id"]), "done")
-        await q.edit_message_text(f"Закрыл: {p['client_name']} / {p['name']}")
-    elif action == "no":
-        await q.edit_message_text(f"Оставил спящим: {p['client_name']} / {p['name']}")
-    elif action == "later":
-        await q.edit_message_text("Ок, вернёмся позже.")
-        await send_main_menu(update, context)
-        return ConversationHandler.END
-
-    context.user_data["sleeping_idx"] = idx + 1
-    return await ask_sleeping(update, context)
 
 
 async def start_add_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -411,8 +360,6 @@ async def reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             sun = monday - dt.timedelta(days=1)
             await db.set_flag(me.id, monday, "weekend_days", choice)
             # Send reminder(s) for selected day(s)
-            tz = context.bot_data.get("tz")
-            await db.mark_sleeping_projects(today=dt.datetime.now(tz=tz).date())
             if choice in {"sat", "both"}:
                 projects = [dict(r) for r in await db.list_active_projects_for_user(me.id)]
                 await q.message.reply_text(
@@ -484,7 +431,6 @@ log_conversation = ConversationHandler(
         NEW_CLIENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, new_client)],
         SEL_CLIENT_PROJECT: [CallbackQueryHandler(select_client_project, pattern=r"^log:")],
         NEW_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, new_project)],
-        SLEEPING: [CallbackQueryHandler(sleeping_answer, pattern=r"^log:sleep:")],
     },
     fallbacks=[],
     name="log",

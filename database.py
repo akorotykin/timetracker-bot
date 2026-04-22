@@ -59,8 +59,10 @@ class Database:
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               client_id INTEGER NOT NULL,
               name TEXT NOT NULL,
-              status TEXT NOT NULL CHECK (status IN ('active','sleeping','done')),
+              status TEXT NOT NULL CHECK (status IN ('active','done')),
               last_activity_at TEXT,
+              closed_by_user_id INTEGER DEFAULT NULL,
+              closed_at TEXT DEFAULT NULL,
               FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
               UNIQUE (client_id, name)
             );
@@ -114,9 +116,17 @@ class Database:
               FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS positions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL UNIQUE,
+              default_internal_rate REAL NOT NULL DEFAULT 0,
+              default_external_rate REAL NOT NULL DEFAULT 0
+            );
+
             CREATE INDEX IF NOT EXISTS idx_timelog_user_date ON timelog(user_id, date);
             CREATE INDEX IF NOT EXISTS idx_timelog_project_date ON timelog(project_id, date);
             CREATE INDEX IF NOT EXISTS idx_projects_status_activity ON projects(status, last_activity_at);
+            CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
             CREATE INDEX IF NOT EXISTS idx_absence_user_date ON absence(user_id, date);
             CREATE INDEX IF NOT EXISTS idx_reminder_ack_user_date ON reminder_ack(user_id, date);
             """
@@ -128,7 +138,36 @@ class Database:
             msg = str(e).lower()
             if "duplicate column" not in msg and "already exists" not in msg:
                 raise
+
+        # Migrations: add project closure fields safely.
+        for sql in [
+            "ALTER TABLE projects ADD COLUMN closed_by_user_id INTEGER DEFAULT NULL;",
+            "ALTER TABLE projects ADD COLUMN closed_at TEXT DEFAULT NULL;",
+        ]:
+            try:
+                await conn.execute(sql)
+            except Exception as e:
+                msg = str(e).lower()
+                if "duplicate column" not in msg and "already exists" not in msg:
+                    raise
         await conn.commit()
+
+        # Seed positions if empty.
+        row = await self.fetchone("SELECT COUNT(*) AS c FROM positions;")
+        if row and int(row["c"] or 0) == 0:
+            await self.executemany(
+                "INSERT INTO positions (name, default_internal_rate, default_external_rate) VALUES (?,?,?);",
+                [
+                    ("designer", 0, 0),
+                    ("art_director", 0, 0),
+                    ("copywriter", 0, 0),
+                    ("creative_director", 0, 0),
+                    ("junior_art_director", 0, 0),
+                    ("junior_copywriter", 0, 0),
+                    ("senior_art_director", 0, 0),
+                    ("senior_copywriter", 0, 0),
+                ],
+            )
 
     async def execute(self, sql: str, params: Iterable[Any] = ()) -> None:
         conn = await self.connect()
@@ -167,12 +206,18 @@ class Database:
         )
 
     async def create_user(
-        self, tg_id: int, name: str, role: str = "member", position: str | None = None
+        self,
+        tg_id: int,
+        name: str,
+        role: str = "member",
+        position: str | None = None,
+        internal_rate: float = 0.0,
+        external_rate: float = 0.0,
     ) -> User:
         conn = await self.connect()
         await conn.execute(
             "INSERT INTO users (tg_id, name, role, position, internal_rate, external_rate) VALUES (?,?,?,?,?,?);",
-            (tg_id, name.strip(), role, position, 0.0, 0.0),
+            (tg_id, name.strip(), role, position, float(internal_rate), float(external_rate)),
         )
         await conn.commit()
         user = await self.get_user_by_tg(tg_id)
@@ -204,6 +249,54 @@ class Database:
     async def set_user_position(self, user_id: int, position: str | None) -> None:
         await self.execute("UPDATE users SET position = ? WHERE id = ?;", (position, user_id))
 
+    async def list_positions(self) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            "SELECT id, name, default_internal_rate, default_external_rate FROM positions ORDER BY name;"
+        )
+
+    async def get_position_by_name(self, name: str) -> aiosqlite.Row | None:
+        return await self.fetchone(
+            "SELECT id, name, default_internal_rate, default_external_rate FROM positions WHERE name = ?;",
+            (name,),
+        )
+
+    async def create_position(self, name: str, default_internal_rate: float = 0, default_external_rate: float = 0) -> int:
+        conn = await self.connect()
+        cur = await conn.execute(
+            "INSERT INTO positions (name, default_internal_rate, default_external_rate) VALUES (?,?,?);",
+            (name.strip(), float(default_internal_rate), float(default_external_rate)),
+        )
+        await conn.commit()
+        return int(cur.lastrowid)
+
+    async def rename_position(self, position_id: int, new_name: str) -> None:
+        # Update positions table and propagate to users.position to preserve linkage.
+        row = await self.fetchone("SELECT name FROM positions WHERE id = ?;", (int(position_id),))
+        old = str(row["name"]) if row else None
+        await self.execute("UPDATE positions SET name = ? WHERE id = ?;", (new_name.strip(), int(position_id)))
+        if old:
+            await self.execute("UPDATE users SET position = ? WHERE position = ?;", (new_name.strip(), old))
+
+    async def delete_position(self, position_id: int) -> None:
+        # When deleting, null out users.position
+        row = await self.fetchone("SELECT name FROM positions WHERE id = ?;", (int(position_id),))
+        name = str(row["name"]) if row else None
+        await self.execute("DELETE FROM positions WHERE id = ?;", (int(position_id),))
+        if name:
+            await self.execute("UPDATE users SET position = NULL WHERE position = ?;", (name,))
+
+    async def update_position_rates(self, position_id: int, internal_rate: float, external_rate: float) -> None:
+        await self.execute(
+            "UPDATE positions SET default_internal_rate = ?, default_external_rate = ? WHERE id = ?;",
+            (float(internal_rate), float(external_rate), int(position_id)),
+        )
+
+    async def apply_position_rates_to_users(self, position_name: str, internal_rate: float, external_rate: float) -> None:
+        await self.execute(
+            "UPDATE users SET internal_rate = ?, external_rate = ? WHERE position = ?;",
+            (float(internal_rate), float(external_rate), position_name),
+        )
+
     # ---------- clients ----------
     async def list_clients(self) -> list[aiosqlite.Row]:
         return await self.fetchall("SELECT id, name FROM clients ORDER BY name;")
@@ -225,7 +318,7 @@ class Database:
     async def list_active_projects_for_user(self, user_id: int) -> list[aiosqlite.Row]:
         return await self.fetchall(
             """
-            SELECT p.id, p.name, c.name AS client_name
+            SELECT p.id, p.name, c.name AS client_name, p.last_activity_at
             FROM projects p
             JOIN clients c ON c.id = p.client_id
             JOIN user_projects up ON up.project_id = p.id
@@ -236,17 +329,8 @@ class Database:
         )
 
     async def list_sleeping_projects_for_user(self, user_id: int) -> list[aiosqlite.Row]:
-        return await self.fetchall(
-            """
-            SELECT p.id, p.name, c.name AS client_name, p.last_activity_at
-            FROM projects p
-            JOIN clients c ON c.id = p.client_id
-            JOIN user_projects up ON up.project_id = p.id
-            WHERE up.user_id = ? AND p.status = 'sleeping'
-            ORDER BY p.last_activity_at, c.name, p.name;
-            """,
-            (user_id,),
-        )
+        # Backward-compatible stub (sleeping status removed).
+        return []
 
     async def list_projects_for_client_active(self, client_id: int) -> list[aiosqlite.Row]:
         return await self.fetchall(
@@ -275,11 +359,10 @@ class Database:
         await self.execute("UPDATE projects SET status = ? WHERE id = ?;", (status, project_id))
 
     async def touch_project_activity(self, project_id: int, activity_date: dt.date) -> None:
-        # If project was sleeping, re-activate on activity.
         await self.execute(
             """
             UPDATE projects
-            SET last_activity_at = ?, status = CASE WHEN status = 'done' THEN 'done' ELSE 'active' END
+            SET last_activity_at = ?
             WHERE id = ?;
             """,
             (activity_date.isoformat(), project_id),
@@ -292,31 +375,66 @@ class Database:
         )
 
     async def list_all_open_projects(self) -> list[aiosqlite.Row]:
+        # Backward-compatible: "open" == active only (sleeping removed).
         return await self.fetchall(
             """
-            SELECT p.id, p.name, p.status, c.name AS client_name, p.last_activity_at
+            SELECT p.id, p.name, p.status, c.name AS client_name, p.last_activity_at,
+                   p.closed_by_user_id, p.closed_at
             FROM projects p
             JOIN clients c ON c.id = p.client_id
-            WHERE p.status IN ('active','sleeping')
-            ORDER BY p.status, c.name, p.name;
+            WHERE p.status = 'active'
+            ORDER BY c.name, p.name;
             """
         )
 
     async def mark_sleeping_projects(self, today: dt.date) -> int:
-        # Sets active projects with no activity 14+ days to sleeping.
-        conn = await self.connect()
-        cur = await conn.execute(
+        # Backward-compatible stub (sleeping status removed).
+        return 0
+
+    async def list_all_projects(self, status: str | None = None) -> list[aiosqlite.Row]:
+        where = ""
+        params: list[Any] = []
+        if status in {"active", "done"}:
+            where = "WHERE p.status = ?"
+            params.append(status)
+        return await self.fetchall(
+            f"""
+            SELECT p.id, p.name, p.status, c.name AS client_name, p.last_activity_at,
+                   p.closed_by_user_id, p.closed_at,
+                   u.name AS closed_by_name
+            FROM projects p
+            JOIN clients c ON c.id = p.client_id
+            LEFT JOIN users u ON u.id = p.closed_by_user_id
+            {where}
+            ORDER BY p.status, c.name, p.name;
+            """,
+            params,
+        )
+
+    async def close_project(self, project_id: int, closed_by_user_id: int) -> None:
+        now = dt.datetime.utcnow().isoformat(timespec="seconds")
+        await self.execute(
             """
             UPDATE projects
-            SET status = 'sleeping'
-            WHERE status = 'active'
-              AND last_activity_at IS NOT NULL
-              AND date(last_activity_at) <= date(?, '-14 day');
+            SET status = 'done',
+                closed_by_user_id = ?,
+                closed_at = ?
+            WHERE id = ?;
             """,
-            (today.isoformat(),),
+            (int(closed_by_user_id), now, int(project_id)),
         )
-        await conn.commit()
-        return int(cur.rowcount or 0)
+
+    async def reopen_project(self, project_id: int) -> None:
+        await self.execute(
+            """
+            UPDATE projects
+            SET status = 'active',
+                closed_by_user_id = NULL,
+                closed_at = NULL
+            WHERE id = ?;
+            """,
+            (int(project_id),),
+        )
 
     # ---------- timelog ----------
     async def add_timelog(self, user_id: int, project_id: int, hours: float, date_: dt.date) -> int:
@@ -367,17 +485,17 @@ class Database:
 
         if group_by == "project":
             group_sql = "p.id, p.name, c.name AS client_name"
-            label_sql = "p.id AS group_id, p.name AS label, NULL AS position, c.name AS client_name"
+            label_sql = "p.id AS group_id, p.name AS label, NULL AS position, c.name AS client_name, p.status AS project_status"
             join_extra = ""
             order = "c.name, p.name"
         elif group_by == "user":
             group_sql = "u.id, u.name"
-            label_sql = "u.id AS group_id, u.name AS label, u.position AS position, NULL AS client_name"
+            label_sql = "u.id AS group_id, u.name AS label, u.position AS position, NULL AS client_name, NULL AS project_status"
             join_extra = ""
             order = "u.name"
         elif group_by == "client":
             group_sql = "c.id, c.name"
-            label_sql = "c.id AS group_id, c.name AS label, NULL AS position, c.name AS client_name"
+            label_sql = "c.id AS group_id, c.name AS label, NULL AS position, c.name AS client_name, NULL AS project_status"
             join_extra = ""
             order = "c.name"
         else:
