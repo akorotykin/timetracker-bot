@@ -176,5 +176,88 @@ def build_scheduler(bot: Bot, db: Database, tz: ZoneInfo) -> AsyncIOScheduler:
         id="daily_reminders_repeats",
         replace_existing=True,
     )
+
+    # Traffic Manager notifications (daily).
+    notify = CronTrigger(hour=10, minute=15)
+    scheduler.add_job(
+        send_planning_notifications,
+        trigger=notify,
+        args=[bot, db, tz],
+        id="planning_notifications",
+        replace_existing=True,
+    )
     return scheduler
+
+
+async def send_planning_notifications(bot: Bot, db: Database, tz: ZoneInfo) -> None:
+    today = dt.datetime.now(tz=tz).date()
+    tms = [dict(r) for r in await db.list_traffic_managers()]
+    if not tms:
+        return
+
+    # 1) Exceed plan.
+    rows = await db.fetchall(
+        """
+        SELECT pp.user_id, pp.project_id, pp.planned_hours,
+               COALESCE(SUM(t.hours),0) AS actual_hours,
+               u.name AS user_name,
+               c.name AS client_name,
+               p.name AS project_name,
+               p.status AS project_status
+        FROM project_plans pp
+        JOIN users u ON u.id = pp.user_id
+        JOIN projects p ON p.id = pp.project_id
+        JOIN clients c ON c.id = p.client_id
+        LEFT JOIN timelog t ON t.user_id = pp.user_id AND t.project_id = pp.project_id
+        WHERE p.status = 'active'
+        GROUP BY pp.user_id, pp.project_id;
+        """
+    )
+    for r in rows:
+        planned = float(r["planned_hours"] or 0)
+        actual = float(r["actual_hours"] or 0)
+        if planned > 0 and actual > planned:
+            key = f"exceed:{int(r['user_id'])}:{int(r['project_id'])}:{today.isoformat()}"
+            if await db.get_notify_last_sent(key):
+                continue
+            msg = (
+                f"Превышение плана: {r['user_name']} → {r['client_name']} {r['project_name']}\n"
+                f"Факт {actual:.1f} ч > План {planned:.1f} ч"
+            )
+            for tm in tms:
+                await bot.send_message(chat_id=int(tm["tg_id"]), text=msg)
+            await db.set_notify_last_sent(key, today.isoformat())
+
+    # 2) Deadlines: 3 days left and overdue (active only).
+    drows = await db.fetchall(
+        """
+        SELECT p.id AS project_id, p.name AS project_name, p.deadline_at, p.status,
+               c.name AS client_name
+        FROM projects p
+        JOIN clients c ON c.id = p.client_id
+        WHERE p.status = 'active' AND p.deadline_at IS NOT NULL;
+        """
+    )
+    for r in drows:
+        try:
+            d = dt.date.fromisoformat(str(r["deadline_at"])[:10])
+        except Exception:
+            continue
+        days = (d - today).days
+        if days == 3:
+            key = f"deadline3:{int(r['project_id'])}:{today.isoformat()}"
+            if await db.get_notify_last_sent(key):
+                continue
+            msg = f"До дедлайна 3 дня: {r['client_name']} {r['project_name']} — {d.isoformat()}"
+            for tm in tms:
+                await bot.send_message(chat_id=int(tm["tg_id"]), text=msg)
+            await db.set_notify_last_sent(key, today.isoformat())
+        if days < 0:
+            key = f"overdue:{int(r['project_id'])}:{today.isoformat()}"
+            if await db.get_notify_last_sent(key):
+                continue
+            msg = f"Проект просрочен: {r['client_name']} {r['project_name']} — дедлайн был {d.isoformat()}"
+            for tm in tms:
+                await bot.send_message(chat_id=int(tm["tg_id"]), text=msg)
+            await db.set_notify_last_sent(key, today.isoformat())
 

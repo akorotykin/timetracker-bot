@@ -12,6 +12,7 @@ POSITIONS: list[str] = [
     "junior_copywriter",
     "senior_art_director",
     "senior_copywriter",
+    "traffic_manager",
 ]
 
 POSITION_LABELS: dict[str, str] = {
@@ -23,6 +24,7 @@ POSITION_LABELS: dict[str, str] = {
     "junior_copywriter": "Junior Copywriter",
     "senior_art_director": "Senior Art Director",
     "senior_copywriter": "Senior Copywriter",
+    "traffic_manager": "Traffic Manager",
 }
 
 

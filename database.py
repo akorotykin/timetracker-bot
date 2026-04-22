@@ -123,6 +123,24 @@ class Database:
               default_external_rate REAL NOT NULL DEFAULT 0
             );
 
+            CREATE TABLE IF NOT EXISTS project_plans (
+              user_id INTEGER NOT NULL,
+              project_id INTEGER NOT NULL,
+              planned_hours REAL NOT NULL,
+              set_by_user_id INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (user_id, project_id),
+              FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+              FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+              FOREIGN KEY (set_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS notify_state (
+              key TEXT PRIMARY KEY,
+              last_sent TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_timelog_user_date ON timelog(user_id, date);
             CREATE INDEX IF NOT EXISTS idx_timelog_project_date ON timelog(project_id, date);
             CREATE INDEX IF NOT EXISTS idx_projects_status_activity ON projects(status, last_activity_at);
@@ -143,6 +161,7 @@ class Database:
         for sql in [
             "ALTER TABLE projects ADD COLUMN closed_by_user_id INTEGER DEFAULT NULL;",
             "ALTER TABLE projects ADD COLUMN closed_at TEXT DEFAULT NULL;",
+            "ALTER TABLE projects ADD COLUMN deadline_at TEXT DEFAULT NULL;",
         ]:
             try:
                 await conn.execute(sql)
@@ -166,7 +185,14 @@ class Database:
                     ("junior_copywriter", 0, 0),
                     ("senior_art_director", 0, 0),
                     ("senior_copywriter", 0, 0),
+                    ("traffic_manager", 0, 0),
                 ],
+            )
+        else:
+            # Ensure Traffic Manager exists (migration-safe).
+            await self.execute(
+                "INSERT OR IGNORE INTO positions (name, default_internal_rate, default_external_rate) VALUES (?,?,?);",
+                ("traffic_manager", 0, 0),
             )
 
     async def execute(self, sql: str, params: Iterable[Any] = ()) -> None:
@@ -295,6 +321,77 @@ class Database:
         await self.execute(
             "UPDATE users SET internal_rate = ?, external_rate = ? WHERE position = ?;",
             (float(internal_rate), float(external_rate), position_name),
+        )
+
+    # ---------- planning ----------
+
+    async def upsert_project_plan(self, user_id: int, project_id: int, hours: float, set_by_user_id: int) -> None:
+        now = dt.datetime.utcnow().isoformat(timespec="seconds")
+        await self.execute(
+            """
+            INSERT INTO project_plans (user_id, project_id, planned_hours, set_by_user_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, project_id) DO UPDATE SET
+              planned_hours=excluded.planned_hours,
+              set_by_user_id=excluded.set_by_user_id,
+              updated_at=excluded.updated_at;
+            """,
+            (int(user_id), int(project_id), float(hours), int(set_by_user_id), now, now),
+        )
+
+    async def get_project_plan(self, user_id: int, project_id: int) -> float | None:
+        row = await self.fetchone(
+            "SELECT planned_hours FROM project_plans WHERE user_id = ? AND project_id = ?;",
+            (int(user_id), int(project_id)),
+        )
+        return float(row["planned_hours"]) if row else None
+
+    async def list_plans_for_user(self, user_id: int) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            """
+            SELECT pp.project_id, pp.planned_hours, p.name AS project_name, c.name AS client_name, p.status
+            FROM project_plans pp
+            JOIN projects p ON p.id = pp.project_id
+            JOIN clients c ON c.id = p.client_id
+            WHERE pp.user_id = ?
+            ORDER BY c.name, p.name;
+            """,
+            (int(user_id),),
+        )
+
+    async def set_project_deadline(self, project_id: int, deadline_at: str | None) -> None:
+        await self.execute("UPDATE projects SET deadline_at = ? WHERE id = ?;", (deadline_at, int(project_id)))
+
+    async def list_projects_for_client(self, client_id: int, status: str | None = None) -> list[aiosqlite.Row]:
+        where = "WHERE client_id = ?"
+        params: list[Any] = [int(client_id)]
+        if status in {"active", "done"}:
+            where += " AND status = ?"
+            params.append(status)
+        return await self.fetchall(
+            f"SELECT id, name, status, deadline_at FROM projects {where} ORDER BY name;",
+            params,
+        )
+
+    async def list_users_basic(self) -> list[aiosqlite.Row]:
+        return await self.fetchall("SELECT id, tg_id, name, role, position FROM users ORDER BY name;")
+
+    async def list_traffic_managers(self) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            "SELECT id, tg_id, name FROM users WHERE role IN ('member','admin') AND position = 'traffic_manager' ORDER BY name;"
+        )
+
+    async def get_notify_last_sent(self, key: str) -> str | None:
+        row = await self.fetchone("SELECT last_sent FROM notify_state WHERE key = ?;", (key,))
+        return str(row["last_sent"]) if row else None
+
+    async def set_notify_last_sent(self, key: str, last_sent: str) -> None:
+        await self.execute(
+            """
+            INSERT INTO notify_state (key, last_sent) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET last_sent=excluded.last_sent;
+            """,
+            (key, last_sent),
         )
 
     # ---------- clients ----------

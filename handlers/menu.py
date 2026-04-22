@@ -6,7 +6,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 from handlers.common import ensure_user
 
 
-def _main_menu_kb(role: str) -> InlineKeyboardMarkup:
+def _main_menu_kb(role: str, position: str | None) -> InlineKeyboardMarkup:
     if role == "admin":
         return InlineKeyboardMarkup(
             [
@@ -16,6 +16,13 @@ def _main_menu_kb(role: str) -> InlineKeyboardMarkup:
                 ],
                 [InlineKeyboardButton("🙋 Профиль (/me)", callback_data="menu:me")],
                 [InlineKeyboardButton("➕ Добавить клиента / проект", callback_data="menu:addcp")],
+                *(
+                    [
+                        [InlineKeyboardButton("🗓️ Планирование", callback_data="menu:planning")],
+                    ]
+                    if position == "traffic_manager"
+                    else []
+                ),
                 [
                     InlineKeyboardButton("📊 Отчёт", callback_data="menu:report"),
                     InlineKeyboardButton("📤 Выгрузка", callback_data="menu:export"),
@@ -30,6 +37,13 @@ def _main_menu_kb(role: str) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
             [
                 [InlineKeyboardButton("🙋 Профиль (/me)", callback_data="menu:me")],
+                *(
+                    [
+                        [InlineKeyboardButton("🗓️ Планирование", callback_data="menu:planning")],
+                    ]
+                    if position == "traffic_manager"
+                    else []
+                ),
                 [InlineKeyboardButton("📊 Отчёт", callback_data="menu:report")],
                 [InlineKeyboardButton("📤 Выгрузка", callback_data="menu:export")],
             ]
@@ -41,6 +55,13 @@ def _main_menu_kb(role: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📁 Мои проекты", callback_data="menu:myprojects")],
             [InlineKeyboardButton("🙋 Профиль (/me)", callback_data="menu:me")],
             [InlineKeyboardButton("➕ Добавить клиента / проект", callback_data="menu:addcp")],
+            *(
+                [
+                    [InlineKeyboardButton("🗓️ Планирование", callback_data="menu:planning")],
+                ]
+                if position == "traffic_manager"
+                else []
+            ),
             [InlineKeyboardButton("✅ Закрыть проект", callback_data="menu:done")],
         ]
     )
@@ -53,7 +74,7 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     await update.effective_message.reply_text(
         "Главное меню:",
-        reply_markup=_main_menu_kb(user.role),
+        reply_markup=_main_menu_kb(user.role, user.position),
     )
 
 
