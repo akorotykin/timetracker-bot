@@ -135,13 +135,13 @@ class Database:
         assert user is not None
         return user
 
-    async def maybe_seed_first_admin(self, admin_tg_id: int | None) -> None:
-        if admin_tg_id is None:
-            return
-        row = await self.fetchone("SELECT id FROM users WHERE tg_id = ?;", (admin_tg_id,))
-        if not row:
-            return
-        await self.execute("UPDATE users SET role = 'admin' WHERE tg_id = ?;", (admin_tg_id,))
+ async def maybe_seed_first_admin(self, admin_tg_id: int | None) -> None:
+    if admin_tg_id is None:
+        return
+    await self.execute(
+        "UPDATE users SET role = 'admin' WHERE tg_id = ?;",
+        (admin_tg_id,)
+    )
 
     async def list_users(self) -> list[aiosqlite.Row]:
         return await self.fetchall(
@@ -174,7 +174,7 @@ class Database:
     async def rename_client(self, client_id: int, name: str) -> None:
         await self.execute("UPDATE clients SET name = ? WHERE id = ?;", (name.strip(), client_id))
 
-    # ---------- projects ----------
+    # ---------- projects ----------async def maybe
     async def list_active_projects_for_user(self, user_id: int) -> list[aiosqlite.Row]:
         return await self.fetchall(
             """
