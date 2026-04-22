@@ -196,12 +196,51 @@ workload_handler = CommandHandler("workload", workload)
 # ---------- admin export ----------
 
 
-E_PERIOD, E_CUSTOM = 1, 2
+E_PERIOD, E_CUSTOM, E_TYPE, E_USER = 1, 2, 3, 4
+
+
+def _prev_month(today: dt.date) -> tuple[dt.date, dt.date]:
+    first_this = dt.date(today.year, today.month, 1)
+    last_prev = first_this - dt.timedelta(days=1)
+    first_prev = dt.date(last_prev.year, last_prev.month, 1)
+    return first_prev, last_prev
+
+
+def _export_period_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Эта неделя", callback_data="expP:week")],
+            [InlineKeyboardButton("Этот месяц", callback_data="expP:month")],
+            [InlineKeyboardButton("Прошлый месяц", callback_data="expP:prevmonth")],
+            [InlineKeyboardButton("Произвольный", callback_data="expP:custom")],
+            [InlineKeyboardButton("Отмена", callback_data="expP:cancel")],
+        ]
+    )
+
+
+def _export_type_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("По всем сотрудникам", callback_data="expT:employees")],
+            [InlineKeyboardButton("По клиентам", callback_data="expT:clients")],
+            [InlineKeyboardButton("По отдельному сотруднику", callback_data="expT:user")],
+            [InlineKeyboardButton("Отмена", callback_data="expT:cancel")],
+        ]
+    )
+
+
+def _export_users_kb(users: list[dict]) -> InlineKeyboardMarkup:
+    kb: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(f"{u['name']} ({u['role']})", callback_data=f"expU:{u['id']}")] for u in users
+    ]
+    kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="expU:back")])
+    kb.append([InlineKeyboardButton("Отмена", callback_data="expU:cancel")])
+    return InlineKeyboardMarkup(kb)
 
 
 @require_role("admin")
 async def export_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.effective_message.reply_text("Выбери период для Excel:", reply_markup=_period_kb("expP"))
+    await update.effective_message.reply_text("Выбери период для Excel:", reply_markup=_export_period_kb())
     return E_PERIOD
 
 
@@ -218,13 +257,27 @@ async def export_period(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if data == "expP:week":
         p = current_week(today)
         context.user_data["exp_period"] = (p.start, p.end)
-        await q.edit_message_text(f"Готовлю Excel за {p.start.isoformat()} .. {p.end.isoformat()}…")
-        return await export_build_and_send(update, context)
+        await q.edit_message_text(
+            f"Период: {p.start.isoformat()} .. {p.end.isoformat()}\nВыбери тип выгрузки:",
+            reply_markup=_export_type_kb(),
+        )
+        return E_TYPE
     if data == "expP:month":
         p = current_month(today)
         context.user_data["exp_period"] = (p.start, p.end)
-        await q.edit_message_text(f"Готовлю Excel за {p.start.isoformat()} .. {p.end.isoformat()}…")
-        return await export_build_and_send(update, context)
+        await q.edit_message_text(
+            f"Период: {p.start.isoformat()} .. {p.end.isoformat()}\nВыбери тип выгрузки:",
+            reply_markup=_export_type_kb(),
+        )
+        return E_TYPE
+    if data == "expP:prevmonth":
+        start, end = _prev_month(today)
+        context.user_data["exp_period"] = (start, end)
+        await q.edit_message_text(
+            f"Период: {start.isoformat()} .. {end.isoformat()}\nВыбери тип выгрузки:",
+            reply_markup=_export_type_kb(),
+        )
+        return E_TYPE
     if data == "expP:custom":
         await q.edit_message_text("Введи период в формате: YYYY-MM-DD YYYY-MM-DD")
         return E_CUSTOM
@@ -243,87 +296,223 @@ async def export_custom(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text("Некорректный период.")
         return E_CUSTOM
     context.user_data["exp_period"] = (start, end)
-    await update.message.reply_text("Готовлю Excel…")
+    await update.message.reply_text(
+        f"Период: {start.isoformat()} .. {end.isoformat()}\nВыбери тип выгрузки:",
+        reply_markup=_export_type_kb(),
+    )
+    return E_TYPE
+
+
+async def export_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    assert q is not None
+    await q.answer()
+    data = q.data or ""
+    if data == "expT:cancel":
+        await q.edit_message_text("Ок.")
+        await send_main_menu(update, context)
+        return ConversationHandler.END
+
+    context.user_data["exp_type"] = data.split(":")[-1]
+    if context.user_data["exp_type"] == "user":
+        db = await get_db(context)
+        users = [dict(r) for r in await db.list_users()]
+        await q.edit_message_text("Выбери сотрудника:", reply_markup=_export_users_kb(users))
+        return E_USER
+
+    await q.edit_message_text("Готовлю Excel…")
     return await export_build_and_send(update, context)
+
+
+async def export_user_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    assert q is not None
+    await q.answer()
+    data = q.data or ""
+    if data == "expU:cancel":
+        await q.edit_message_text("Ок.")
+        await send_main_menu(update, context)
+        return ConversationHandler.END
+    if data == "expU:back":
+        await q.edit_message_text("Выбери тип выгрузки:", reply_markup=_export_type_kb())
+        return E_TYPE
+    if data.startswith("expU:"):
+        user_id = int(data.split(":")[-1])
+        context.user_data["exp_user_id"] = user_id
+        await q.edit_message_text("Готовлю Excel…")
+        return await export_build_and_send(update, context)
+    return E_USER
 
 
 async def export_build_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     start, end = context.user_data["exp_period"]
     db = await get_db(context)
 
-    # Sheet 1: by projects
-    by_projects = await db.fetchall(
-        """
-        SELECT c.name AS client_name,
-               p.name AS project_name,
-               GROUP_CONCAT(DISTINCT u.name) AS employees,
-               SUM(t.hours) AS hours,
-               SUM(t.hours * u.internal_rate) AS internal_cost,
-               SUM(t.hours * u.external_rate) AS external_cost
-        FROM timelog t
-        JOIN users u ON u.id = t.user_id
-        JOIN projects p ON p.id = t.project_id
-        JOIN clients c ON c.id = p.client_id
-        WHERE t.date BETWEEN ? AND ?
-        GROUP BY p.id
-        ORDER BY c.name, p.name;
-        """,
-        (start.isoformat(), end.isoformat()),
-    )
-
-    # Sheet 2: by employees
-    by_users = await db.fetchall(
-        """
-        SELECT u.name AS user_name,
-               GROUP_CONCAT(DISTINCT (c.name || ' / ' || p.name)) AS projects,
-               SUM(t.hours) AS hours,
-               SUM(t.hours * u.internal_rate) AS internal_cost,
-               SUM(t.hours * u.external_rate) AS external_cost
-        FROM timelog t
-        JOIN users u ON u.id = t.user_id
-        JOIN projects p ON p.id = t.project_id
-        JOIN clients c ON c.id = p.client_id
-        WHERE t.date BETWEEN ? AND ?
-        GROUP BY u.id
-        ORDER BY u.name;
-        """,
-        (start.isoformat(), end.isoformat()),
-    )
+    kind = str(context.user_data.get("exp_type") or "employees")
 
     wb = Workbook()
-    ws1 = wb.active
-    ws1.title = "По проектам"
-    ws1.append(["Проект", "Клиент", "Сотрудники", "Часы", "Себестоимость", "Клиентская стоимость"])
-    for r in by_projects:
-        ws1.append(
-            [
-                r["project_name"],
-                r["client_name"],
-                r["employees"] or "",
-                float(r["hours"] or 0),
-                float(r["internal_cost"] or 0),
-                float(r["external_cost"] or 0),
-            ]
-        )
+    ws = wb.active
 
-    ws2 = wb.create_sheet("По сотрудникам")
-    ws2.append(["Сотрудник", "Проекты", "Часы", "Себестоимость", "Клиентская стоимость"])
-    for r in by_users:
-        ws2.append(
-            [
-                r["user_name"],
-                r["projects"] or "",
-                float(r["hours"] or 0),
-                float(r["internal_cost"] or 0),
-                float(r["external_cost"] or 0),
-            ]
+    if kind == "employees":
+        ws.title = "Сотрудники"
+        ws.append(["Имя", "Роль", "Всего часов", "Себестоимость", "Клиентская стоимость"])
+        rows = await db.fetchall(
+            """
+            SELECT
+              u.name AS user_name,
+              u.role AS role,
+              COALESCE(SUM(t.hours),0) AS hours,
+              COALESCE(SUM(t.hours * u.internal_rate),0) AS internal_cost,
+              COALESCE(SUM(t.hours * u.external_rate),0) AS external_cost
+            FROM users u
+            LEFT JOIN timelog t
+              ON t.user_id = u.id
+             AND t.date BETWEEN ? AND ?
+            GROUP BY u.id
+            ORDER BY u.name;
+            """,
+            (start.isoformat(), end.isoformat()),
         )
+        for r in rows:
+            ws.append(
+                [
+                    r["user_name"],
+                    r["role"],
+                    float(r["hours"] or 0),
+                    float(r["internal_cost"] or 0),
+                    float(r["external_cost"] or 0),
+                ]
+            )
+
+        det = wb.create_sheet("Детализация")
+        det.append(["Сотрудник", "Клиент", "Проект", "Часы", "Себестоимость", "Клиентская стоимость"])
+        drows = await db.fetchall(
+            """
+            SELECT
+              u.name AS user_name,
+              c.name AS client_name,
+              p.name AS project_name,
+              SUM(t.hours) AS hours,
+              SUM(t.hours * u.internal_rate) AS internal_cost,
+              SUM(t.hours * u.external_rate) AS external_cost
+            FROM timelog t
+            JOIN users u ON u.id = t.user_id
+            JOIN projects p ON p.id = t.project_id
+            JOIN clients c ON c.id = p.client_id
+            WHERE t.date BETWEEN ? AND ?
+            GROUP BY u.id, c.id, p.id
+            ORDER BY u.name, c.name, p.name;
+            """,
+            (start.isoformat(), end.isoformat()),
+        )
+        for r in drows:
+            det.append(
+                [
+                    r["user_name"],
+                    r["client_name"],
+                    r["project_name"],
+                    float(r["hours"] or 0),
+                    float(r["internal_cost"] or 0),
+                    float(r["external_cost"] or 0),
+                ]
+            )
+
+    elif kind == "clients":
+        ws.title = "Клиенты"
+        ws.append(["Клиент", "Всего часов", "Себестоимость", "Клиентская стоимость"])
+        rows = await db.fetchall(
+            """
+            SELECT
+              c.name AS client_name,
+              SUM(t.hours) AS hours,
+              SUM(t.hours * u.internal_rate) AS internal_cost,
+              SUM(t.hours * u.external_rate) AS external_cost
+            FROM timelog t
+            JOIN users u ON u.id = t.user_id
+            JOIN projects p ON p.id = t.project_id
+            JOIN clients c ON c.id = p.client_id
+            WHERE t.date BETWEEN ? AND ?
+            GROUP BY c.id
+            ORDER BY c.name;
+            """,
+            (start.isoformat(), end.isoformat()),
+        )
+        for r in rows:
+            ws.append(
+                [
+                    r["client_name"],
+                    float(r["hours"] or 0),
+                    float(r["internal_cost"] or 0),
+                    float(r["external_cost"] or 0),
+                ]
+            )
+
+        det = wb.create_sheet("Детализация")
+        det.append(["Клиент", "Проект", "Сотрудник", "Часы", "Себестоимость", "Клиентская стоимость"])
+        drows = await db.fetchall(
+            """
+            SELECT
+              c.name AS client_name,
+              p.name AS project_name,
+              u.name AS user_name,
+              SUM(t.hours) AS hours,
+              SUM(t.hours * u.internal_rate) AS internal_cost,
+              SUM(t.hours * u.external_rate) AS external_cost
+            FROM timelog t
+            JOIN users u ON u.id = t.user_id
+            JOIN projects p ON p.id = t.project_id
+            JOIN clients c ON c.id = p.client_id
+            WHERE t.date BETWEEN ? AND ?
+            GROUP BY c.id, p.id, u.id
+            ORDER BY c.name, p.name, u.name;
+            """,
+            (start.isoformat(), end.isoformat()),
+        )
+        for r in drows:
+            det.append(
+                [
+                    r["client_name"],
+                    r["project_name"],
+                    r["user_name"],
+                    float(r["hours"] or 0),
+                    float(r["internal_cost"] or 0),
+                    float(r["external_cost"] or 0),
+                ]
+            )
+
+    elif kind == "user":
+        user_id = int(context.user_data["exp_user_id"])
+        ws.title = "Отчёт"
+        ws.append(["Проект", "Клиент", "Часы", "Себестоимость", "Клиентская стоимость"])
+        rows = await db.report_grouped(start=start, end=end, group_by="project", restrict_user_id=user_id)
+        for r in rows:
+            ws.append(
+                [
+                    r["label"],
+                    r["client_name"],
+                    float(r["hours"] or 0),
+                    float(r["internal_cost"] or 0),
+                    float(r["external_cost"] or 0),
+                ]
+            )
+    else:
+        ws.title = "Отчёт"
+        ws.append(["Данных нет"])
 
     bio = BytesIO()
     wb.save(bio)
     bio.seek(0)
 
-    filename = f"timetracker_{start.isoformat()}_{end.isoformat()}.xlsx"
+    if kind == "employees":
+        kind_slug = "employees"
+    elif kind == "clients":
+        kind_slug = "clients"
+    elif kind == "user":
+        kind_slug = f"user_{int(context.user_data.get('exp_user_id') or 0)}"
+    else:
+        kind_slug = "export"
+
+    filename = f"report_{kind_slug}_{start.isoformat()}_{end.isoformat()}.xlsx"
     await update.effective_message.reply_document(document=bio, filename=filename)
     await send_main_menu(update, context)
     return ConversationHandler.END
@@ -334,6 +523,8 @@ export_conversation = ConversationHandler(
     states={
         E_PERIOD: [CallbackQueryHandler(export_period, pattern=r"^expP:")],
         E_CUSTOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, export_custom)],
+        E_TYPE: [CallbackQueryHandler(export_type, pattern=r"^expT:")],
+        E_USER: [CallbackQueryHandler(export_user_select, pattern=r"^expU:")],
     },
     fallbacks=[],
     name="export",
