@@ -82,9 +82,41 @@ class Database:
               FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS absence (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL,
+              date TEXT NOT NULL,
+              reason TEXT NOT NULL CHECK (reason IN ('vacation','sick','dayoff')),
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+              UNIQUE (user_id, date)
+            );
+
+            CREATE TABLE IF NOT EXISTS reminder_ack (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL,
+              date TEXT NOT NULL,
+              kind TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+              UNIQUE (user_id, date, kind)
+            );
+
+            CREATE TABLE IF NOT EXISTS reminder_flags (
+              user_id INTEGER NOT NULL,
+              date TEXT NOT NULL,
+              key TEXT NOT NULL,
+              value TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              PRIMARY KEY (user_id, date, key),
+              FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_timelog_user_date ON timelog(user_id, date);
             CREATE INDEX IF NOT EXISTS idx_timelog_project_date ON timelog(project_id, date);
             CREATE INDEX IF NOT EXISTS idx_projects_status_activity ON projects(status, last_activity_at);
+            CREATE INDEX IF NOT EXISTS idx_absence_user_date ON absence(user_id, date);
+            CREATE INDEX IF NOT EXISTS idx_reminder_ack_user_date ON reminder_ack(user_id, date);
             """
         )
         await conn.commit()
@@ -320,17 +352,17 @@ class Database:
 
         if group_by == "project":
             group_sql = "p.id, p.name, c.name AS client_name"
-            label_sql = "p.name AS label, c.name AS client_name"
+            label_sql = "p.id AS group_id, p.name AS label, c.name AS client_name"
             join_extra = ""
             order = "c.name, p.name"
         elif group_by == "user":
             group_sql = "u.id, u.name"
-            label_sql = "u.name AS label, NULL AS client_name"
+            label_sql = "u.id AS group_id, u.name AS label, NULL AS client_name"
             join_extra = ""
             order = "u.name"
         elif group_by == "client":
             group_sql = "c.id, c.name"
-            label_sql = "c.name AS label, c.name AS client_name"
+            label_sql = "c.id AS group_id, c.name AS label, c.name AS client_name"
             join_extra = ""
             order = "c.name"
         else:
@@ -354,4 +386,78 @@ class Database:
             """,
             params,
         )
+
+    # ---------- absence / reminders ----------
+
+    async def add_absence(self, user_id: int, date_: dt.date, reason: str) -> None:
+        now = dt.datetime.utcnow().isoformat(timespec="seconds")
+        await self.execute(
+            """
+            INSERT INTO absence (user_id, date, reason, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, date) DO UPDATE SET reason=excluded.reason;
+            """,
+            (int(user_id), date_.isoformat(), str(reason), now),
+        )
+
+    async def absence_counts(self, start: dt.date, end: dt.date) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            """
+            SELECT user_id, reason, COUNT(*) AS days
+            FROM absence
+            WHERE date BETWEEN ? AND ?
+            GROUP BY user_id, reason;
+            """,
+            (start.isoformat(), end.isoformat()),
+        )
+
+    async def has_timelog(self, user_id: int, date_: dt.date) -> bool:
+        row = await self.fetchone(
+            "SELECT 1 FROM timelog WHERE user_id = ? AND date = ? LIMIT 1;",
+            (int(user_id), date_.isoformat()),
+        )
+        return row is not None
+
+    async def has_absence(self, user_id: int, date_: dt.date) -> bool:
+        row = await self.fetchone(
+            "SELECT 1 FROM absence WHERE user_id = ? AND date = ? LIMIT 1;",
+            (int(user_id), date_.isoformat()),
+        )
+        return row is not None
+
+    async def ack_reminder(self, user_id: int, date_: dt.date, kind: str) -> None:
+        now = dt.datetime.utcnow().isoformat(timespec="seconds")
+        await self.execute(
+            """
+            INSERT OR IGNORE INTO reminder_ack (user_id, date, kind, created_at)
+            VALUES (?, ?, ?, ?);
+            """,
+            (int(user_id), date_.isoformat(), str(kind), now),
+        )
+
+    async def has_ack(self, user_id: int, date_: dt.date, kind: str) -> bool:
+        row = await self.fetchone(
+            "SELECT 1 FROM reminder_ack WHERE user_id = ? AND date = ? AND kind = ? LIMIT 1;",
+            (int(user_id), date_.isoformat(), str(kind)),
+        )
+        return row is not None
+
+    async def set_flag(self, user_id: int, date_: dt.date, key: str, value: str) -> None:
+        now = dt.datetime.utcnow().isoformat(timespec="seconds")
+        await self.execute(
+            """
+            INSERT INTO reminder_flags (user_id, date, key, value, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, date, key) DO UPDATE SET value=excluded.value;
+            """,
+            (int(user_id), date_.isoformat(), str(key), str(value), now),
+        )
+
+    async def get_flag(self, user_id: int, date_: dt.date, key: str) -> str | None:
+        row = await self.fetchone(
+            "SELECT value FROM reminder_flags WHERE user_id = ? AND date = ? AND key = ?;",
+            (int(user_id), date_.isoformat(), str(key)),
+        )
+        return str(row["value"]) if row else None
+
 

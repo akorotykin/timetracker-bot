@@ -112,6 +112,13 @@ async def report_dim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     me = context.user_data["me"]
     rows = await db.report_grouped(start=start, end=end, group_by=group_by, restrict_user_id=None)
     show_money = _money_allowed(me.role)
+    abs_map: dict[int, dict[str, int]] = {}
+    if group_by == "user":
+        for r in await db.absence_counts(start=start, end=end):
+            uid = int(r["user_id"])
+            reason = str(r["reason"])
+            days = int(r["days"] or 0)
+            abs_map.setdefault(uid, {})[reason] = days
     lines = [f"Отчёт {start.isoformat()} .. {end.isoformat()} ({group_by})"]
     if not rows:
         lines.append("Данных нет.")
@@ -121,12 +128,25 @@ async def report_dim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     for r in rows:
         h = float(r["hours"] or 0)
+        suffix = ""
+        if group_by == "user":
+            uid = int(r["group_id"])
+            reasons = abs_map.get(uid, {})
+            parts_abs: list[str] = []
+            if reasons.get("vacation"):
+                parts_abs.append(f"{reasons['vacation']} дн отпуск")
+            if reasons.get("sick"):
+                parts_abs.append(f"{reasons['sick']} дн болел")
+            if reasons.get("dayoff"):
+                parts_abs.append(f"{reasons['dayoff']} дн day off")
+            if parts_abs:
+                suffix = " (" + ", ".join(parts_abs) + ")"
         if show_money:
             ic = float(r["internal_cost"] or 0)
             ec = float(r["external_cost"] or 0)
-            lines.append(f"- {r['label']}: {h:.2f} ч | себест. {ic:.2f} | клиент. {ec:.2f}")
+            lines.append(f"- {r['label']}{suffix}: {h:.2f} ч | себест. {ic:.2f} | клиент. {ec:.2f}")
         else:
-            lines.append(f"- {r['label']}: {h:.2f} ч")
+            lines.append(f"- {r['label']}{suffix}: {h:.2f} ч")
     await q.edit_message_text("\n".join(lines))
     await send_main_menu(update, context)
     return ConversationHandler.END

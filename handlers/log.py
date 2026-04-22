@@ -80,7 +80,8 @@ async def _load_user_projects(update: Update, context: ContextTypes.DEFAULT_TYPE
 @require_role("member")
 async def log_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     tz = context.bot_data.get("tz")
-    context.user_data["log_date"] = yesterday(tz=tz)
+    if "log_date" not in context.user_data:
+        context.user_data["log_date"] = yesterday(tz=tz)
     db = await get_db(context)
     await db.mark_sleeping_projects(today=dt.datetime.now(tz=tz).date())
     projects = await _load_user_projects(update, context)
@@ -312,33 +313,160 @@ async def reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     q = update.callback_query
     assert q is not None
     await q.answer()
-    tz = context.bot_data.get("tz")
-    context.user_data["log_date"] = yesterday(tz=tz)
     data = q.data or ""
-    if data == "rem:skip":
-        await q.edit_message_text("Ок, пропустили.")
+
+    # Formats:
+    # - rem:d:YYYY-MM-DD:proj:<id>
+    # - rem:d:YYYY-MM-DD:add
+    # - rem:d:YYYY-MM-DD:ack
+    # - rem:d:YYYY-MM-DD:absent
+    # - rem:d:YYYY-MM-DD:abs:<vacation|sick|dayoff>
+    # - remW:YYYY-MM-DD:ask
+    # - remW:YYYY-MM-DD:ans:<yes|no>
+    # - remW:YYYY-MM-DD:days:<sat|sun|both>
+    parts = data.split(":")
+    if parts[:3] == ["rem", "d", parts[2]]:
+        pass
+
+    if parts and parts[0] == "rem" and len(parts) >= 4 and parts[1] == "d":
+        date_s = parts[2]
+        date_ = dt.date.fromisoformat(date_s)
+        context.user_data["log_date"] = date_
+
+        if parts[3] == "ack":
+            db = await get_db(context)
+            me = context.user_data["me"]
+            await db.ack_reminder(me.id, date_, kind="already")
+            await q.edit_message_text("Ок, закрыли.")
+            await send_main_menu(update, context)
+            return ConversationHandler.END
+
+        if parts[3] == "absent":
+            await q.edit_message_text("Ок. Почему не работал?", reply_markup=_absence_kb(date_s))
+            return ConversationHandler.END
+
+        if parts[3] == "abs" and len(parts) >= 5:
+            reason = parts[4]
+            if reason not in {"vacation", "sick", "dayoff"}:
+                await q.edit_message_text("Не понял причину.")
+                await send_main_menu(update, context)
+                return ConversationHandler.END
+            db = await get_db(context)
+            me = context.user_data["me"]
+            await db.add_absence(me.id, date_, reason)
+            await q.edit_message_text("Принято. Спасибо!")
+            await send_main_menu(update, context)
+            return ConversationHandler.END
+
+        if parts[3] == "add":
+            await q.edit_message_text("Добавим проект.")
+            return await start_add_project(update, context)
+
+        if parts[3] == "proj" and len(parts) >= 5:
+            project_id = int(parts[4])
+            context.user_data["selected_project_id"] = project_id
+            await q.edit_message_text(f"Сколько часов за {date_.isoformat()}? (например 3.5)")
+            return ENTER_HOURS
+
+        await q.edit_message_text("Не понял действие.")
         await send_main_menu(update, context)
         return ConversationHandler.END
-    if data == "rem:add":
-        await q.edit_message_text("Добавим проект.")
-        return await start_add_project(update, context)
-    if data.startswith("rem:proj:"):
-        project_id = int(data.split(":")[-1])
-        context.user_data["selected_project_id"] = project_id
-        await q.edit_message_text("Сколько часов за вчера? (например 3.5)")
-        return ENTER_HOURS
+
+    if parts and parts[0] == "remW" and len(parts) >= 3:
+        # Weekend flow key is the Monday date (today) in ISO.
+        monday_s = parts[1]
+        monday = dt.date.fromisoformat(monday_s)
+        db = await get_db(context)
+        me = context.user_data["me"]
+
+        if parts[2] == "ans" and len(parts) >= 4:
+            ans = parts[3]
+            if ans == "no":
+                await db.set_flag(me.id, monday, "weekend_answer", "no")
+                sat = monday - dt.timedelta(days=2)
+                sun = monday - dt.timedelta(days=1)
+                await db.ack_reminder(me.id, sat, kind="weekend_rest")
+                await db.ack_reminder(me.id, sun, kind="weekend_rest")
+                await q.edit_message_text("Ок, отдыхаем.")
+                await send_main_menu(update, context)
+                return ConversationHandler.END
+            if ans == "yes":
+                await db.set_flag(me.id, monday, "weekend_answer", "yes")
+                sat = (monday - dt.timedelta(days=2)).isoformat()
+                sun = (monday - dt.timedelta(days=1)).isoformat()
+                kb = InlineKeyboardMarkup(
+                    [
+                        [InlineKeyboardButton(f"Сб {sat}", callback_data=f"remW:{monday_s}:days:sat")],
+                        [InlineKeyboardButton(f"Вс {sun}", callback_data=f"remW:{monday_s}:days:sun")],
+                        [InlineKeyboardButton("Оба дня", callback_data=f"remW:{monday_s}:days:both")],
+                        [InlineKeyboardButton("Отмена", callback_data=f"remW:{monday_s}:ans:no")],
+                    ]
+                )
+                await q.edit_message_text("За какие дни вносить время?", reply_markup=kb)
+                return ConversationHandler.END
+
+        if parts[2] == "days" and len(parts) >= 4:
+            choice = parts[3]
+            sat = monday - dt.timedelta(days=2)
+            sun = monday - dt.timedelta(days=1)
+            await db.set_flag(me.id, monday, "weekend_days", choice)
+            # Send reminder(s) for selected day(s)
+            tz = context.bot_data.get("tz")
+            await db.mark_sleeping_projects(today=dt.datetime.now(tz=tz).date())
+            if choice in {"sat", "both"}:
+                projects = [dict(r) for r in await db.list_active_projects_for_user(me.id)]
+                await q.message.reply_text(
+                    f"Что делал в субботу {sat.isoformat()}?",
+                    reply_markup=reminder_keyboard(projects, sat),
+                )
+            if choice in {"sun", "both"}:
+                projects = [dict(r) for r in await db.list_active_projects_for_user(me.id)]
+                await q.message.reply_text(
+                    f"Что делал в воскресенье {sun.isoformat()}?",
+                    reply_markup=reminder_keyboard(projects, sun),
+                )
+            await q.edit_message_text("Ок, давай внесём.")
+            return ConversationHandler.END
+
+        await q.edit_message_text("Не понял ответ.")
+        await send_main_menu(update, context)
+        return ConversationHandler.END
+
     await send_main_menu(update, context)
     return ConversationHandler.END
 
 
-def reminder_keyboard(projects: list[dict]) -> InlineKeyboardMarkup:
+def _absence_kb(date_s: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Отпуск", callback_data=f"rem:d:{date_s}:abs:vacation"),
+                InlineKeyboardButton("Болел", callback_data=f"rem:d:{date_s}:abs:sick"),
+                InlineKeyboardButton("Day off", callback_data=f"rem:d:{date_s}:abs:dayoff"),
+            ]
+        ]
+    )
+
+
+def reminder_keyboard(projects: list[dict], date_: dt.date) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+    date_s = date_.isoformat()
     for p in projects:
         rows.append(
-            [InlineKeyboardButton(f"{p['client_name']} / {p['name']}", callback_data=f"rem:proj:{p['id']}")]
+            [
+                InlineKeyboardButton(
+                    f"{p['client_name']} / {p['name']}",
+                    callback_data=f"rem:d:{date_s}:proj:{p['id']}",
+                )
+            ]
         )
-    rows.append([InlineKeyboardButton("Добавить проект", callback_data="rem:add")])
-    rows.append([InlineKeyboardButton("Пропустить", callback_data="rem:skip")])
+    rows.append(
+        [
+            InlineKeyboardButton("Не работал", callback_data=f"rem:d:{date_s}:absent"),
+            InlineKeyboardButton("Уже внёс", callback_data=f"rem:d:{date_s}:ack"),
+        ]
+    )
+    rows.append([InlineKeyboardButton("Добавить проект", callback_data=f"rem:d:{date_s}:add")])
     return InlineKeyboardMarkup(rows)
 
 
