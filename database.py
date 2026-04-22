@@ -253,9 +253,30 @@ class Database:
     async def maybe_seed_first_admin(self, admin_tg_id: int | None) -> None:
         if admin_tg_id is None:
             return
+        # Ensure ADMIN_TG_ID always has admin + traffic_manager defaults.
+        prow = await self.get_position_by_name("traffic_manager")
+        i = float(prow["default_internal_rate"] or 0) if prow else 0.0
+        e = float(prow["default_external_rate"] or 0) if prow else 0.0
         await self.execute(
-            "UPDATE users SET role = 'admin' WHERE tg_id = ?;",
+            """
+            UPDATE users
+            SET role = 'admin',
+                position = 'traffic_manager',
+                internal_rate = COALESCE(internal_rate, 0),
+                external_rate = COALESCE(external_rate, 0)
+            WHERE tg_id = ?;
+            """,
             (admin_tg_id,),
+        )
+        # If rates are still zero, apply defaults (don't overwrite custom rates).
+        await self.execute(
+            """
+            UPDATE users
+            SET internal_rate = CASE WHEN internal_rate = 0 THEN ? ELSE internal_rate END,
+                external_rate = CASE WHEN external_rate = 0 THEN ? ELSE external_rate END
+            WHERE tg_id = ?;
+            """,
+            (i, e, admin_tg_id),
         )
 
     async def list_users(self) -> list[aiosqlite.Row]:

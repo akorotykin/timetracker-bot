@@ -24,6 +24,7 @@ from handlers import (
     planning_conversation,
     report_conversation,
     start_handler,
+    team_workload_handler,
     workload_handler,
 )
 from scheduler import build_scheduler
@@ -71,6 +72,7 @@ async def main() -> None:
     app.add_handler(me_callback_handler)
     app.add_handler(add_client_project_conversation)
     app.add_handler(planning_conversation)
+    app.add_handler(team_workload_handler)
     app.add_handler(log_conversation)
     app.add_handler(myprojects_handler)
     app.add_handler(done_conversation)

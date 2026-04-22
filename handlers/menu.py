@@ -19,6 +19,7 @@ def _main_menu_kb(role: str, position: str | None) -> InlineKeyboardMarkup:
                 *(
                     [
                         [InlineKeyboardButton("🗓️ Планирование", callback_data="menu:planning")],
+                        [InlineKeyboardButton("📈 Загрузка команды", callback_data="menu:team_workload")],
                     ]
                     if position == "traffic_manager"
                     else []
@@ -40,6 +41,7 @@ def _main_menu_kb(role: str, position: str | None) -> InlineKeyboardMarkup:
                 *(
                     [
                         [InlineKeyboardButton("🗓️ Планирование", callback_data="menu:planning")],
+                        [InlineKeyboardButton("📈 Загрузка команды", callback_data="menu:team_workload")],
                     ]
                     if position == "traffic_manager"
                     else []
@@ -58,6 +60,7 @@ def _main_menu_kb(role: str, position: str | None) -> InlineKeyboardMarkup:
             *(
                 [
                     [InlineKeyboardButton("🗓️ Планирование", callback_data="menu:planning")],
+                    [InlineKeyboardButton("📈 Загрузка команды", callback_data="menu:team_workload")],
                 ]
                 if position == "traffic_manager"
                 else []
@@ -98,10 +101,15 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         await me_cmd(update, context)
         return
+    if action == "team_workload":
+        from handlers.team_workload import team_workload
+
+        await team_workload(update, context)
+        return
 
     await q.edit_message_text("Неизвестное действие. Открой /menu ещё раз.")
 
 
 menu_handler = CommandHandler("menu", menu_cmd)
-menu_callback_handler = CallbackQueryHandler(menu_callback, pattern=r"^menu:(myprojects|me)$")
+menu_callback_handler = CallbackQueryHandler(menu_callback, pattern=r"^menu:(myprojects|me|team_workload)$")
 

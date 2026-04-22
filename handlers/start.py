@@ -36,6 +36,26 @@ async def save_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     tg_id = await get_me(update)
     admin_tg_id = context.bot_data.get("admin_tg_id")
     role = "admin" if (admin_tg_id and tg_id == admin_tg_id) else "member"
+    if role == "admin":
+        # Channel/admin user: default to Traffic Manager to avoid manual setup after deploy.
+        prow = await db.get_position_by_name("traffic_manager")
+        i = float(prow["default_internal_rate"] or 0) if prow else 0.0
+        e = float(prow["default_external_rate"] or 0) if prow else 0.0
+        await db.create_user(
+            tg_id=tg_id,
+            name=name,
+            role="admin",
+            position="traffic_manager",
+            internal_rate=i,
+            external_rate=e,
+        )
+        await update.message.reply_text(
+            "Твоя должность: Traffic Manager\n"
+            "Ставки установлены автоматически.\n"
+            "Если что-то не так — обратись к админу."
+        )
+        await send_main_menu(update, context)
+        return ConversationHandler.END
     context.user_data["reg_name"] = name
     context.user_data["reg_role"] = role
     await update.message.reply_text("Выбери свою должность:", reply_markup=positions_kb("regpos"))
