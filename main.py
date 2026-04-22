@@ -16,6 +16,8 @@ from handlers import (
     done_conversation,
     export_conversation,
     log_conversation,
+    me_callback_handler,
+    me_handler,
     menu_callback_handler,
     menu_handler,
     myprojects_handler,
@@ -64,6 +66,8 @@ async def main() -> None:
     app.add_handler(start_handler)
     app.add_handler(menu_handler)
     app.add_handler(menu_callback_handler)
+    app.add_handler(me_handler)
+    app.add_handler(me_callback_handler)
     app.add_handler(add_client_project_conversation)
     app.add_handler(log_conversation)
     app.add_handler(myprojects_handler)

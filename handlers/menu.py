@@ -14,6 +14,7 @@ def _main_menu_kb(role: str) -> InlineKeyboardMarkup:
                     InlineKeyboardButton("📝 Внести время", callback_data="menu:log"),
                     InlineKeyboardButton("📁 Мои проекты", callback_data="menu:myprojects"),
                 ],
+                [InlineKeyboardButton("🙋 Профиль (/me)", callback_data="menu:me")],
                 [InlineKeyboardButton("➕ Добавить клиента / проект", callback_data="menu:addcp")],
                 [
                     InlineKeyboardButton("📊 Отчёт", callback_data="menu:report"),
@@ -28,6 +29,7 @@ def _main_menu_kb(role: str) -> InlineKeyboardMarkup:
     if role == "observer":
         return InlineKeyboardMarkup(
             [
+                [InlineKeyboardButton("🙋 Профиль (/me)", callback_data="menu:me")],
                 [InlineKeyboardButton("📊 Отчёт", callback_data="menu:report")],
                 [InlineKeyboardButton("📤 Выгрузка", callback_data="menu:export")],
             ]
@@ -37,6 +39,7 @@ def _main_menu_kb(role: str) -> InlineKeyboardMarkup:
         [
             [InlineKeyboardButton("📝 Внести время", callback_data="menu:log")],
             [InlineKeyboardButton("📁 Мои проекты", callback_data="menu:myprojects")],
+            [InlineKeyboardButton("🙋 Профиль (/me)", callback_data="menu:me")],
             [InlineKeyboardButton("➕ Добавить клиента / проект", callback_data="menu:addcp")],
             [InlineKeyboardButton("✅ Закрыть проект", callback_data="menu:done")],
         ]
@@ -69,10 +72,15 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         await myprojects(update, context)
         return
+    if action == "me":
+        from handlers.me import me_cmd
+
+        await me_cmd(update, context)
+        return
 
     await q.edit_message_text("Неизвестное действие. Открой /menu ещё раз.")
 
 
 menu_handler = CommandHandler("menu", menu_cmd)
-menu_callback_handler = CallbackQueryHandler(menu_callback, pattern=r"^menu:myprojects$")
+menu_callback_handler = CallbackQueryHandler(menu_callback, pattern=r"^menu:(myprojects|me)$")
 

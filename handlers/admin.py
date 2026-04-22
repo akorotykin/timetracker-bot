@@ -12,9 +12,10 @@ from telegram.ext import (
 
 from handlers.common import get_db, require_role
 from handlers.menu import send_main_menu
+from handlers.positions import POSITIONS, position_label, positions_kb
 
 
-MENU, USER_SELECT, USER_RATES, CLIENTS, CLIENT_RENAME, PROJECTS, ROLES_LIST, ROLES_ACTION = range(1, 9)
+MENU, USER_SELECT, USER_RATES, USER_POSITION, CLIENTS, CLIENT_RENAME, PROJECTS, ROLES_LIST, ROLES_ACTION = range(1, 10)
 
 
 def _menu_kb() -> InlineKeyboardMarkup:
@@ -48,7 +49,12 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         db = await get_db(context)
         users = [dict(r) for r in await db.list_users()]
         kb = [
-            [InlineKeyboardButton(f"{u['name']} ({u['role']})", callback_data=f"adm:user:{u['id']}")]
+            [
+                InlineKeyboardButton(
+                    f"{u['name']} ({u['role']}) — {position_label(u.get('position'))}",
+                    callback_data=f"adm:user:{u['id']}",
+                )
+            ]
             for u in users
         ]
         kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:back")])
@@ -57,7 +63,15 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if data == "adm:roles":
         db = await get_db(context)
         users = [dict(r) for r in await db.list_users()]
-        kb = [[InlineKeyboardButton(f"{u['name']} ({u['role']})", callback_data=f"adm:rolesel:{u['id']}")] for u in users]
+        kb = [
+            [
+                InlineKeyboardButton(
+                    f"{u['name']} ({u['role']}) — {position_label(u.get('position'))}",
+                    callback_data=f"adm:rolesel:{u['id']}",
+                )
+            ]
+            for u in users
+        ]
         kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:back")])
         await q.edit_message_text("Управление ролями — выбери сотрудника:", reply_markup=InlineKeyboardMarkup(kb))
         return ROLES_LIST
@@ -124,7 +138,15 @@ async def roles_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if data == "adm:rolesback":
         db = await get_db(context)
         users = [dict(r) for r in await db.list_users()]
-        kb = [[InlineKeyboardButton(f"{u['name']} ({u['role']})", callback_data=f"adm:rolesel:{u['id']}")] for u in users]
+        kb = [
+            [
+                InlineKeyboardButton(
+                    f"{u['name']} ({u['role']}) — {position_label(u.get('position'))}",
+                    callback_data=f"adm:rolesel:{u['id']}",
+                )
+            ]
+            for u in users
+        ]
         kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:back")])
         await q.edit_message_text("Управление ролями — выбери сотрудника:", reply_markup=InlineKeyboardMarkup(kb))
         return ROLES_LIST
@@ -167,6 +189,7 @@ async def user_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
                     InlineKeyboardButton("observer", callback_data="adm:role:observer"),
                     InlineKeyboardButton("member", callback_data="adm:role:member"),
                 ],
+                [InlineKeyboardButton("Должность (выбрать)", callback_data="adm:position")],
                 [InlineKeyboardButton("Ставки (ввести)", callback_data="adm:rates")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="adm:back-users")],
             ]
@@ -182,17 +205,44 @@ async def user_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     if data == "adm:rates":
         await q.edit_message_text("Введи ставки через пробел: internal_rate external_rate (например: 25 60)")
         return USER_RATES
+    if data == "adm:position":
+        await q.edit_message_text("Выбери должность:", reply_markup=positions_kb("admpos"))
+        return USER_POSITION
     if data == "adm:back-users":
         db = await get_db(context)
         users = [dict(r) for r in await db.list_users()]
         kb = [
-            [InlineKeyboardButton(f"{u['name']} ({u['role']})", callback_data=f"adm:user:{u['id']}")]
+            [
+                InlineKeyboardButton(
+                    f"{u['name']} ({u['role']}) — {position_label(u.get('position'))}",
+                    callback_data=f"adm:user:{u['id']}",
+                )
+            ]
             for u in users
         ]
         kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:back")])
         await q.edit_message_text("Сотрудники:", reply_markup=InlineKeyboardMarkup(kb))
         return USER_SELECT
     return USER_SELECT
+
+
+async def user_position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    assert q is not None
+    await q.answer()
+    data = q.data or ""
+    if not data.startswith("admpos:"):
+        await q.edit_message_text("Не понял выбор.")
+        return USER_POSITION
+    pos = data.split(":")[-1]
+    if pos not in POSITIONS:
+        await q.edit_message_text("Не понял должность.")
+        return USER_POSITION
+    db = await get_db(context)
+    await db.set_user_position(int(context.user_data["adm_user_id"]), pos)
+    await q.edit_message_text(f"Должность обновлена: {position_label(pos)}")
+    await q.message.reply_text("Админ-панель:", reply_markup=_menu_kb())
+    return MENU
 
 
 async def user_rates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -277,6 +327,7 @@ admin_conversation = ConversationHandler(
         MENU: [CallbackQueryHandler(menu, pattern=r"^adm:")],
         USER_SELECT: [CallbackQueryHandler(user_select, pattern=r"^adm:")],
         USER_RATES: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_rates)],
+        USER_POSITION: [CallbackQueryHandler(user_position, pattern=r"^admpos:")],
         CLIENTS: [CallbackQueryHandler(clients, pattern=r"^adm:")],
         CLIENT_RENAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, client_rename)],
         PROJECTS: [CallbackQueryHandler(projects, pattern=r"^adm:")],

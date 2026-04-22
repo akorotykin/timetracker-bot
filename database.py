@@ -13,6 +13,7 @@ class User:
     tg_id: int
     name: str
     role: str  # admin/observer/member
+    position: str | None
     internal_rate: float
     external_rate: float
 
@@ -43,6 +44,7 @@ class Database:
               tg_id INTEGER NOT NULL UNIQUE,
               name TEXT NOT NULL,
               role TEXT NOT NULL CHECK (role IN ('admin','observer','member')),
+              position TEXT DEFAULT NULL,
               internal_rate REAL NOT NULL DEFAULT 0,
               external_rate REAL NOT NULL DEFAULT 0
             );
@@ -119,6 +121,13 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_reminder_ack_user_date ON reminder_ack(user_id, date);
             """
         )
+        # Migration: add users.position safely (ignore if already exists).
+        try:
+            await conn.execute("ALTER TABLE users ADD COLUMN position TEXT DEFAULT NULL;")
+        except Exception as e:
+            msg = str(e).lower()
+            if "duplicate column" not in msg and "already exists" not in msg:
+                raise
         await conn.commit()
 
     async def execute(self, sql: str, params: Iterable[Any] = ()) -> None:
@@ -152,15 +161,18 @@ class Database:
             tg_id=row["tg_id"],
             name=row["name"],
             role=row["role"],
+            position=row["position"] if "position" in row.keys() else None,
             internal_rate=float(row["internal_rate"]),
             external_rate=float(row["external_rate"]),
         )
 
-    async def create_user(self, tg_id: int, name: str, role: str = "member") -> User:
+    async def create_user(
+        self, tg_id: int, name: str, role: str = "member", position: str | None = None
+    ) -> User:
         conn = await self.connect()
         await conn.execute(
-            "INSERT INTO users (tg_id, name, role, internal_rate, external_rate) VALUES (?,?,?,?,?);",
-            (tg_id, name.strip(), role, 0.0, 0.0),
+            "INSERT INTO users (tg_id, name, role, position, internal_rate, external_rate) VALUES (?,?,?,?,?,?);",
+            (tg_id, name.strip(), role, position, 0.0, 0.0),
         )
         await conn.commit()
         user = await self.get_user_by_tg(tg_id)
@@ -177,7 +189,7 @@ class Database:
 
     async def list_users(self) -> list[aiosqlite.Row]:
         return await self.fetchall(
-            "SELECT id, tg_id, name, role, internal_rate, external_rate FROM users ORDER BY name;"
+            "SELECT id, tg_id, name, role, position, internal_rate, external_rate FROM users ORDER BY name;"
         )
 
     async def set_user_role(self, user_id: int, role: str) -> None:
@@ -188,6 +200,9 @@ class Database:
             "UPDATE users SET internal_rate = ?, external_rate = ? WHERE id = ?;",
             (float(internal_rate), float(external_rate), user_id),
         )
+
+    async def set_user_position(self, user_id: int, position: str | None) -> None:
+        await self.execute("UPDATE users SET position = ? WHERE id = ?;", (position, user_id))
 
     # ---------- clients ----------
     async def list_clients(self) -> list[aiosqlite.Row]:
@@ -352,17 +367,17 @@ class Database:
 
         if group_by == "project":
             group_sql = "p.id, p.name, c.name AS client_name"
-            label_sql = "p.id AS group_id, p.name AS label, c.name AS client_name"
+            label_sql = "p.id AS group_id, p.name AS label, NULL AS position, c.name AS client_name"
             join_extra = ""
             order = "c.name, p.name"
         elif group_by == "user":
             group_sql = "u.id, u.name"
-            label_sql = "u.id AS group_id, u.name AS label, NULL AS client_name"
+            label_sql = "u.id AS group_id, u.name AS label, u.position AS position, NULL AS client_name"
             join_extra = ""
             order = "u.name"
         elif group_by == "client":
             group_sql = "c.id, c.name"
-            label_sql = "c.id AS group_id, c.name AS label, c.name AS client_name"
+            label_sql = "c.id AS group_id, c.name AS label, NULL AS position, c.name AS client_name"
             join_extra = ""
             order = "c.name"
         else:

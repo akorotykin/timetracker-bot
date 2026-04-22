@@ -1,6 +1,7 @@
 from .start import start_handler
 from .menu import menu_callback_handler, menu_handler
 from .add_client_project import add_client_project_conversation
+from .me import me_callback_handler, me_handler
 from .log import log_conversation
 from .projects import myprojects_handler, done_conversation
 from .reports import report_conversation, workload_handler
@@ -12,6 +13,8 @@ __all__ = [
     "menu_handler",
     "menu_callback_handler",
     "add_client_project_conversation",
+    "me_handler",
+    "me_callback_handler",
     "log_conversation",
     "myprojects_handler",
     "done_conversation",

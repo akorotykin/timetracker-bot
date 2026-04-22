@@ -17,6 +17,7 @@ from openpyxl import Workbook
 
 from handlers.common import current_month, current_week, get_db, parse_date, require_role
 from handlers.menu import send_main_menu
+from handlers.positions import position_label
 
 
 R_PERIOD, R_CUSTOM, R_DIM = 1, 2, 3
@@ -129,10 +130,14 @@ async def report_dim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     for r in rows:
         h = float(r["hours"] or 0)
         suffix = ""
+        pos_suffix = ""
         if group_by == "user":
             uid = int(r["group_id"])
             reasons = abs_map.get(uid, {})
             parts_abs: list[str] = []
+            pos = position_label(r["position"])
+            if pos != "—":
+                pos_suffix = f" — {pos}"
             if reasons.get("vacation"):
                 parts_abs.append(f"{reasons['vacation']} дн отпуск")
             if reasons.get("sick"):
@@ -144,9 +149,11 @@ async def report_dim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         if show_money:
             ic = float(r["internal_cost"] or 0)
             ec = float(r["external_cost"] or 0)
-            lines.append(f"- {r['label']}{suffix}: {h:.2f} ч | себест. {ic:.2f} | клиент. {ec:.2f}")
+            lines.append(
+                f"- {r['label']}{pos_suffix}{suffix}: {h:.2f} ч | себест. {ic:.2f} | клиент. {ec:.2f}"
+            )
         else:
-            lines.append(f"- {r['label']}{suffix}: {h:.2f} ч")
+            lines.append(f"- {r['label']}{pos_suffix}{suffix}: {h:.2f} ч")
     await q.edit_message_text("\n".join(lines))
     await send_main_menu(update, context)
     return ConversationHandler.END
@@ -174,6 +181,7 @@ async def workload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     rows = await db.fetchall(
         """
         SELECT u.name AS user_name,
+               u.position AS position,
                SUM(t.hours) AS hours
         FROM timelog t
         JOIN users u ON u.id = t.user_id
@@ -190,8 +198,9 @@ async def workload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines = [f"Загрузка за {start.isoformat()} .. {end.isoformat()}:"]
     for r in rows:
         user_name = r["user_name"]
+        pos = position_label(r["position"])
         hours = float(r["hours"] or 0)
-        lines.append(f"- {user_name}: {hours:.2f} ч")
+        lines.append(f"- {user_name} — {pos}: {hours:.2f} ч")
         prows = await db.fetchall(
             """
             SELECT c.name AS client_name, p.name AS project_name, SUM(t.hours) AS hours
@@ -251,7 +260,13 @@ def _export_type_kb() -> InlineKeyboardMarkup:
 
 def _export_users_kb(users: list[dict]) -> InlineKeyboardMarkup:
     kb: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(f"{u['name']} ({u['role']})", callback_data=f"expU:{u['id']}")] for u in users
+        [
+            InlineKeyboardButton(
+                f"{u['name']} ({u['role']}) — {position_label(u.get('position'))}",
+                callback_data=f"expU:{u['id']}",
+            )
+        ]
+        for u in users
     ]
     kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="expU:back")])
     kb.append([InlineKeyboardButton("Отмена", callback_data="expU:cancel")])
@@ -375,12 +390,13 @@ async def export_build_and_send(update: Update, context: ContextTypes.DEFAULT_TY
 
     if kind == "employees":
         ws.title = "Сотрудники"
-        ws.append(["Имя", "Роль", "Всего часов", "Себестоимость", "Клиентская стоимость"])
+        ws.append(["Имя", "Роль", "Должность", "Всего часов", "Себестоимость", "Клиентская стоимость"])
         rows = await db.fetchall(
             """
             SELECT
               u.name AS user_name,
               u.role AS role,
+              u.position AS position,
               COALESCE(SUM(t.hours),0) AS hours,
               COALESCE(SUM(t.hours * u.internal_rate),0) AS internal_cost,
               COALESCE(SUM(t.hours * u.external_rate),0) AS external_cost
@@ -398,6 +414,7 @@ async def export_build_and_send(update: Update, context: ContextTypes.DEFAULT_TY
                 [
                     r["user_name"],
                     r["role"],
+                    position_label(r["position"]),
                     float(r["hours"] or 0),
                     float(r["internal_cost"] or 0),
                     float(r["external_cost"] or 0),
@@ -405,11 +422,14 @@ async def export_build_and_send(update: Update, context: ContextTypes.DEFAULT_TY
             )
 
         det = wb.create_sheet("Детализация")
-        det.append(["Сотрудник", "Клиент", "Проект", "Часы", "Себестоимость", "Клиентская стоимость"])
+        det.append(
+            ["Сотрудник", "Должность", "Клиент", "Проект", "Часы", "Себестоимость", "Клиентская стоимость"]
+        )
         drows = await db.fetchall(
             """
             SELECT
               u.name AS user_name,
+              u.position AS position,
               c.name AS client_name,
               p.name AS project_name,
               SUM(t.hours) AS hours,
@@ -429,6 +449,7 @@ async def export_build_and_send(update: Update, context: ContextTypes.DEFAULT_TY
             det.append(
                 [
                     r["user_name"],
+                    position_label(r["position"]),
                     r["client_name"],
                     r["project_name"],
                     float(r["hours"] or 0),
@@ -468,13 +489,16 @@ async def export_build_and_send(update: Update, context: ContextTypes.DEFAULT_TY
             )
 
         det = wb.create_sheet("Детализация")
-        det.append(["Клиент", "Проект", "Сотрудник", "Часы", "Себестоимость", "Клиентская стоимость"])
+        det.append(
+            ["Клиент", "Проект", "Сотрудник", "Должность", "Часы", "Себестоимость", "Клиентская стоимость"]
+        )
         drows = await db.fetchall(
             """
             SELECT
               c.name AS client_name,
               p.name AS project_name,
               u.name AS user_name,
+              u.position AS position,
               SUM(t.hours) AS hours,
               SUM(t.hours * u.internal_rate) AS internal_cost,
               SUM(t.hours * u.external_rate) AS external_cost
@@ -494,6 +518,7 @@ async def export_build_and_send(update: Update, context: ContextTypes.DEFAULT_TY
                     r["client_name"],
                     r["project_name"],
                     r["user_name"],
+                    position_label(r["position"]),
                     float(r["hours"] or 0),
                     float(r["internal_cost"] or 0),
                     float(r["external_cost"] or 0),

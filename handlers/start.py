@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from telegram import Update
-from telegram.ext import CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 from handlers.common import get_db, get_me
 from handlers.menu import send_main_menu
+from handlers.positions import POSITIONS, positions_kb
 
 
-ASK_NAME = 1
+ASK_NAME, ASK_POSITION = 1, 2
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -35,8 +36,27 @@ async def save_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     tg_id = await get_me(update)
     admin_tg_id = context.bot_data.get("admin_tg_id")
     role = "admin" if (admin_tg_id and tg_id == admin_tg_id) else "member"
-    await db.create_user(tg_id=tg_id, name=name, role=role)
-    await update.message.reply_text(f"Готово, {name}!")
+    context.user_data["reg_name"] = name
+    context.user_data["reg_role"] = role
+    await update.message.reply_text("Выбери свою должность:", reply_markup=positions_kb("regpos"))
+    return ASK_POSITION
+
+
+async def save_position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    assert q is not None
+    await q.answer()
+    data = q.data or ""
+    pos = data.split(":")[-1]
+    if pos not in POSITIONS:
+        await q.edit_message_text("Не понял должность. Попробуй ещё раз.")
+        return ASK_POSITION
+    name = str(context.user_data["reg_name"])
+    role = str(context.user_data["reg_role"])
+    db = await get_db(context)
+    tg_id = await get_me(update)
+    await db.create_user(tg_id=tg_id, name=name, role=role, position=pos)
+    await q.edit_message_text(f"Готово, {name}!")
     await send_main_menu(update, context)
     return ConversationHandler.END
 
@@ -45,6 +65,7 @@ start_handler = ConversationHandler(
     entry_points=[CommandHandler("start", start)],
     states={
         ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_name)],
+        ASK_POSITION: [CallbackQueryHandler(save_position, pattern=r"^regpos:")],
     },
     fallbacks=[],
     name="start",
