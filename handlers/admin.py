@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
+
+from handlers.common import get_db, require_role
+
+
+MENU, USER_SELECT, USER_RATES, CLIENTS, CLIENT_RENAME, PROJECTS = range(1, 7)
+
+
+def _menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Сотрудники (роль/ставки)", callback_data="adm:users")],
+            [InlineKeyboardButton("Проекты (закрыть)", callback_data="adm:projects")],
+            [InlineKeyboardButton("Клиенты (добавить/переименовать)", callback_data="adm:clients")],
+            [InlineKeyboardButton("Закрыть", callback_data="adm:close")],
+        ]
+    )
+
+
+@require_role("admin")
+async def admin_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.effective_message.reply_text("Админ-панель:", reply_markup=_menu_kb())
+    return MENU
+
+
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    assert q is not None
+    await q.answer()
+    data = q.data or ""
+    if data == "adm:close":
+        await q.edit_message_text("Ок.")
+        return ConversationHandler.END
+    if data == "adm:users":
+        db = await get_db(context)
+        users = [dict(r) for r in await db.list_users()]
+        kb = [
+            [InlineKeyboardButton(f"{u['name']} ({u['role']})", callback_data=f"adm:user:{u['id']}")]
+            for u in users
+        ]
+        kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:back")])
+        await q.edit_message_text("Сотрудники:", reply_markup=InlineKeyboardMarkup(kb))
+        return USER_SELECT
+    if data == "adm:projects":
+        db = await get_db(context)
+        projects = [dict(r) for r in await db.list_all_open_projects()]
+        kb = [
+            [
+                InlineKeyboardButton(
+                    f"{p['status']} | {p['client_name']} / {p['name']}",
+                    callback_data=f"adm:proj:{p['id']}",
+                )
+            ]
+            for p in projects
+        ]
+        kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:back")])
+        await q.edit_message_text("Открытые проекты (нажми чтобы закрыть):", reply_markup=InlineKeyboardMarkup(kb))
+        return PROJECTS
+    if data == "adm:clients":
+        db = await get_db(context)
+        clients = [dict(r) for r in await db.list_clients()]
+        kb = [[InlineKeyboardButton(c["name"], callback_data=f"adm:client:{c['id']}")] for c in clients]
+        kb.append([InlineKeyboardButton("➕ Добавить клиента", callback_data="adm:client:new")])
+        kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:back")])
+        await q.edit_message_text("Клиенты:", reply_markup=InlineKeyboardMarkup(kb))
+        return CLIENTS
+    if data == "adm:back":
+        await q.edit_message_text("Админ-панель:", reply_markup=_menu_kb())
+        return MENU
+    return MENU
+
+
+async def user_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    assert q is not None
+    await q.answer()
+    data = q.data or ""
+    if data == "adm:back":
+        await q.edit_message_text("Админ-панель:", reply_markup=_menu_kb())
+        return MENU
+    if data.startswith("adm:user:"):
+        user_id = int(data.split(":")[-1])
+        context.user_data["adm_user_id"] = user_id
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Роль: admin", callback_data="adm:role:admin"),
+                    InlineKeyboardButton("observer", callback_data="adm:role:observer"),
+                    InlineKeyboardButton("member", callback_data="adm:role:member"),
+                ],
+                [InlineKeyboardButton("Ставки (ввести)", callback_data="adm:rates")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="adm:back-users")],
+            ]
+        )
+        await q.edit_message_text("Действия:", reply_markup=kb)
+        return USER_SELECT
+    if data.startswith("adm:role:"):
+        role = data.split(":")[-1]
+        db = await get_db(context)
+        await db.set_user_role(int(context.user_data["adm_user_id"]), role)
+        await q.edit_message_text(f"Роль обновлена: {role}", reply_markup=_menu_kb())
+        return MENU
+    if data == "adm:rates":
+        await q.edit_message_text("Введи ставки через пробел: internal_rate external_rate (например: 25 60)")
+        return USER_RATES
+    if data == "adm:back-users":
+        db = await get_db(context)
+        users = [dict(r) for r in await db.list_users()]
+        kb = [
+            [InlineKeyboardButton(f"{u['name']} ({u['role']})", callback_data=f"adm:user:{u['id']}")]
+            for u in users
+        ]
+        kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:back")])
+        await q.edit_message_text("Сотрудники:", reply_markup=InlineKeyboardMarkup(kb))
+        return USER_SELECT
+    return USER_SELECT
+
+
+async def user_rates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    assert update.message is not None
+    raw = (update.message.text or "").strip().replace(",", ".")
+    parts = raw.split()
+    if len(parts) != 2:
+        await update.message.reply_text("Нужно 2 числа: internal external")
+        return USER_RATES
+    try:
+        i = float(parts[0])
+        e = float(parts[1])
+    except Exception:
+        await update.message.reply_text("Не понял числа. Пример: 25 60")
+        return USER_RATES
+    if i < 0 or e < 0:
+        await update.message.reply_text("Ставки не могут быть отрицательными.")
+        return USER_RATES
+    db = await get_db(context)
+    await db.set_user_rates(int(context.user_data["adm_user_id"]), i, e)
+    await update.message.reply_text("Ставки обновлены.", reply_markup=_menu_kb())
+    return MENU
+
+
+async def clients(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    assert q is not None
+    await q.answer()
+    data = q.data or ""
+    if data == "adm:back":
+        await q.edit_message_text("Админ-панель:", reply_markup=_menu_kb())
+        return MENU
+    if data == "adm:client:new":
+        await q.edit_message_text("Введи название нового клиента:")
+        context.user_data["adm_client_id"] = None
+        return CLIENT_RENAME
+    if data.startswith("adm:client:"):
+        client_id = int(data.split(":")[-1])
+        context.user_data["adm_client_id"] = client_id
+        await q.edit_message_text("Введи новое название клиента:")
+        return CLIENT_RENAME
+    return CLIENTS
+
+
+async def client_rename(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    assert update.message is not None
+    name = (update.message.text or "").strip()
+    if len(name) < 2:
+        await update.message.reply_text("Слишком коротко. Введи ещё раз.")
+        return CLIENT_RENAME
+    db = await get_db(context)
+    client_id = context.user_data.get("adm_client_id")
+    if client_id is None:
+        await db.create_client(name)
+        await update.message.reply_text("Клиент добавлен.", reply_markup=_menu_kb())
+        return MENU
+    await db.rename_client(int(client_id), name)
+    await update.message.reply_text("Клиент переименован.", reply_markup=_menu_kb())
+    return MENU
+
+
+async def projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    assert q is not None
+    await q.answer()
+    data = q.data or ""
+    if data == "adm:back":
+        await q.edit_message_text("Админ-панель:", reply_markup=_menu_kb())
+        return MENU
+    if data.startswith("adm:proj:"):
+        project_id = int(data.split(":")[-1])
+        db = await get_db(context)
+        await db.set_project_status(project_id, "done")
+        await q.edit_message_text("Проект закрыт.", reply_markup=_menu_kb())
+        return MENU
+    return PROJECTS
+
+
+admin_conversation = ConversationHandler(
+    entry_points=[CommandHandler("admin", admin_entry)],
+    states={
+        MENU: [CallbackQueryHandler(menu, pattern=r"^adm:")],
+        USER_SELECT: [CallbackQueryHandler(user_select, pattern=r"^adm:")],
+        USER_RATES: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_rates)],
+        CLIENTS: [CallbackQueryHandler(clients, pattern=r"^adm:")],
+        CLIENT_RENAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, client_rename)],
+        PROJECTS: [CallbackQueryHandler(projects, pattern=r"^adm:")],
+    },
+    fallbacks=[],
+    name="admin",
+    persistent=False,
+)
+
