@@ -16,6 +16,7 @@ from telegram.ext import (
 from openpyxl import Workbook
 
 from handlers.common import current_month, current_week, get_db, parse_date, require_role
+from handlers.menu import send_main_menu
 
 
 R_PERIOD, R_CUSTOM, R_DIM = 1, 2, 3
@@ -60,6 +61,7 @@ async def report_period(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     data = q.data or ""
     if data == "repP:cancel":
         await q.edit_message_text("Ок.")
+        await send_main_menu(update, context)
         return ConversationHandler.END
 
     today = dt.date.today()
@@ -102,6 +104,7 @@ async def report_dim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     data = q.data or ""
     if data == "repD:cancel":
         await q.edit_message_text("Ок.")
+        await send_main_menu(update, context)
         return ConversationHandler.END
     group_by = data.split(":")[-1]
     start, end = context.user_data["rep_period"]
@@ -113,6 +116,7 @@ async def report_dim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not rows:
         lines.append("Данных нет.")
         await q.edit_message_text("\n".join(lines))
+        await send_main_menu(update, context)
         return ConversationHandler.END
 
     for r in rows:
@@ -124,11 +128,12 @@ async def report_dim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         else:
             lines.append(f"- {r['label']}: {h:.2f} ч")
     await q.edit_message_text("\n".join(lines))
+    await send_main_menu(update, context)
     return ConversationHandler.END
 
 
 report_conversation = ConversationHandler(
-    entry_points=[CommandHandler("report", report_entry)],
+    entry_points=[CommandHandler("report", report_entry), CallbackQueryHandler(report_entry, pattern=r"^menu:report$")],
     states={
         R_PERIOD: [CallbackQueryHandler(report_period, pattern=r"^repP:")],
         R_CUSTOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, report_custom)],
@@ -207,6 +212,7 @@ async def export_period(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     data = q.data or ""
     if data == "expP:cancel":
         await q.edit_message_text("Ок.")
+        await send_main_menu(update, context)
         return ConversationHandler.END
     today = dt.date.today()
     if data == "expP:week":
@@ -319,11 +325,12 @@ async def export_build_and_send(update: Update, context: ContextTypes.DEFAULT_TY
 
     filename = f"timetracker_{start.isoformat()}_{end.isoformat()}.xlsx"
     await update.effective_message.reply_document(document=bio, filename=filename)
+    await send_main_menu(update, context)
     return ConversationHandler.END
 
 
 export_conversation = ConversationHandler(
-    entry_points=[CommandHandler("export", export_entry)],
+    entry_points=[CommandHandler("export", export_entry), CallbackQueryHandler(export_entry, pattern=r"^menu:export$")],
     states={
         E_PERIOD: [CallbackQueryHandler(export_period, pattern=r"^expP:")],
         E_CUSTOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, export_custom)],

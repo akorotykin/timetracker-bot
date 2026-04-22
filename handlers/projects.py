@@ -11,6 +11,7 @@ from telegram.ext import (
 )
 
 from handlers.common import get_db, month_start, require_role
+from handlers.menu import send_main_menu
 
 
 DONE_SELECT = 1
@@ -23,6 +24,7 @@ async def myprojects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     projects = [dict(r) for r in await db.list_active_projects_for_user(me.id)]
     if not projects:
         await update.effective_message.reply_text("Активных проектов нет. Добавь через /log → «Добавить другой проект».")
+        await send_main_menu(update, context)
         return
 
     today = dt.date.today()
@@ -38,6 +40,7 @@ async def myprojects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         lines.append(f"- {p['client_name']} / {p['name']}: всего {h_all:.2f} ч, за месяц {h_month:.2f} ч")
     lines.append(f"\nИтого: всего {total_all:.2f} ч, за месяц {total_month:.2f} ч")
     await update.effective_message.reply_text("\n".join(lines))
+    await send_main_menu(update, context)
 
 
 myprojects_handler = CommandHandler("myprojects", myprojects)
@@ -50,6 +53,7 @@ async def done_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     projects = [dict(r) for r in await db.list_active_projects_for_user(me.id)]
     if not projects:
         await update.effective_message.reply_text("Активных проектов нет.")
+        await send_main_menu(update, context)
         return ConversationHandler.END
     kb = InlineKeyboardMarkup(
         [[InlineKeyboardButton(f"{p['client_name']} / {p['name']}", callback_data=f"done:{p['id']}")] for p in projects]
@@ -66,16 +70,18 @@ async def done_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     data = q.data or ""
     if data == "done:cancel":
         await q.edit_message_text("Ок.")
+        await send_main_menu(update, context)
         return ConversationHandler.END
     project_id = int(data.split(":")[-1])
     db = await get_db(context)
     await db.set_project_status(project_id, "done")
     await q.edit_message_text("Закрыл.")
+    await send_main_menu(update, context)
     return ConversationHandler.END
 
 
 done_conversation = ConversationHandler(
-    entry_points=[CommandHandler("done", done_entry)],
+    entry_points=[CommandHandler("done", done_entry), CallbackQueryHandler(done_entry, pattern=r"^menu:done$")],
     states={DONE_SELECT: [CallbackQueryHandler(done_select, pattern=r"^done:")]},
     fallbacks=[],
     name="done",

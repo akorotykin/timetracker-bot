@@ -14,6 +14,7 @@ from telegram.ext import (
 )
 
 from handlers.common import get_db, require_role, yesterday
+from handlers.menu import send_main_menu
 
 
 SELECT_PROJECT, ENTER_HOURS, MORE, SEL_CLIENT, NEW_CLIENT, SEL_CLIENT_PROJECT, NEW_PROJECT, SLEEPING = range(1, 9)
@@ -160,6 +161,7 @@ async def maybe_sleeping_start(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.callback_query.edit_message_text("Спасибо! Проверяю спящие проекты…")
     if not sleeping_list:
         await update.effective_message.reply_text("Готово.")
+        await send_main_menu(update, context)
         return ConversationHandler.END
     context.user_data["sleeping_projects"] = sleeping_list
     context.user_data["sleeping_idx"] = 0
@@ -171,6 +173,7 @@ async def ask_sleeping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     items: list[dict] = context.user_data["sleeping_projects"]
     if idx >= len(items):
         await update.effective_message.reply_text("Готово.")
+        await send_main_menu(update, context)
         return ConversationHandler.END
     p = items[idx]
     last = p.get("last_activity_at") or "—"
@@ -198,6 +201,7 @@ async def sleeping_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await q.edit_message_text(f"Оставил спящим: {p['client_name']} / {p['name']}")
     elif action == "later":
         await q.edit_message_text("Ок, вернёмся позже.")
+        await send_main_menu(update, context)
         return ConversationHandler.END
 
     context.user_data["sleeping_idx"] = idx + 1
@@ -313,6 +317,7 @@ async def reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     data = q.data or ""
     if data == "rem:skip":
         await q.edit_message_text("Ок, пропустили.")
+        await send_main_menu(update, context)
         return ConversationHandler.END
     if data == "rem:add":
         await q.edit_message_text("Добавим проект.")
@@ -322,6 +327,7 @@ async def reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         context.user_data["selected_project_id"] = project_id
         await q.edit_message_text("Сколько часов за вчера? (например 3.5)")
         return ENTER_HOURS
+    await send_main_menu(update, context)
     return ConversationHandler.END
 
 
@@ -339,6 +345,7 @@ def reminder_keyboard(projects: list[dict]) -> InlineKeyboardMarkup:
 log_conversation = ConversationHandler(
     entry_points=[
         CommandHandler("log", log_entry),
+        CallbackQueryHandler(log_entry, pattern=r"^menu:log$"),
         CallbackQueryHandler(reminder_callback, pattern=r"^rem:"),
     ],
     states={

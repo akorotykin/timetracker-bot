@@ -15,6 +15,8 @@ from handlers import (
     done_conversation,
     export_conversation,
     log_conversation,
+    menu_callback_handler,
+    menu_handler,
     myprojects_handler,
     report_conversation,
     start_handler,
@@ -59,6 +61,8 @@ async def main() -> None:
     app.bot_data["admin_tg_id"] = int(admin_tg_id) if admin_tg_id and admin_tg_id.isdigit() else None
 
     app.add_handler(start_handler)
+    app.add_handler(menu_handler)
+    app.add_handler(menu_callback_handler)
     app.add_handler(log_conversation)
     app.add_handler(myprojects_handler)
     app.add_handler(done_conversation)

@@ -11,6 +11,7 @@ from telegram.ext import (
 )
 
 from handlers.common import get_db, require_role
+from handlers.menu import send_main_menu
 
 
 MENU, USER_SELECT, USER_RATES, CLIENTS, CLIENT_RENAME, PROJECTS = range(1, 7)
@@ -40,6 +41,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     data = q.data or ""
     if data == "adm:close":
         await q.edit_message_text("Ок.")
+        await send_main_menu(update, context)
         return ConversationHandler.END
     if data == "adm:users":
         db = await get_db(context)
@@ -203,7 +205,7 @@ async def projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 admin_conversation = ConversationHandler(
-    entry_points=[CommandHandler("admin", admin_entry)],
+    entry_points=[CommandHandler("admin", admin_entry), CallbackQueryHandler(admin_entry, pattern=r"^menu:admin$")],
     states={
         MENU: [CallbackQueryHandler(menu, pattern=r"^adm:")],
         USER_SELECT: [CallbackQueryHandler(user_select, pattern=r"^adm:")],

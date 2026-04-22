@@ -4,6 +4,7 @@ from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 from handlers.common import get_db, get_me
+from handlers.menu import send_main_menu
 
 
 ASK_NAME = 1
@@ -17,9 +18,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if user:
         if admin_tg_id and tg_id == admin_tg_id and user.role != "admin":
             await db.maybe_seed_first_admin(tg_id)
-        await update.message.reply_text(
-            f"Привет, {user.name}! Доступные команды: /log, /myprojects, /done."
-        )
+        await update.message.reply_text(f"Привет, {user.name}!")
+        await send_main_menu(update, context)
         return ConversationHandler.END
     await update.message.reply_text("Привет! Как тебя зовут? (введи имя текстом)")
     return ASK_NAME
@@ -36,7 +36,8 @@ async def save_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     admin_tg_id = context.bot_data.get("admin_tg_id")
     role = "admin" if (admin_tg_id and tg_id == admin_tg_id) else "member"
     await db.create_user(tg_id=tg_id, name=name, role=role)
-    await update.message.reply_text(f"Готово, {name}! Теперь можно логировать: /log")
+    await update.message.reply_text(f"Готово, {name}!")
+    await send_main_menu(update, context)
     return ConversationHandler.END
 
 
