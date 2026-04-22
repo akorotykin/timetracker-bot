@@ -13,7 +13,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     db = await get_db(context)
     tg_id = await get_me(update)
     user = await db.get_user_by_tg(tg_id)
+    admin_tg_id = context.bot_data.get("admin_tg_id")
     if user:
+        if admin_tg_id and tg_id == admin_tg_id and user.role != "admin":
+            await db.maybe_seed_first_admin(tg_id)
         await update.message.reply_text(
             f"Привет, {user.name}! Доступные команды: /log, /myprojects, /done."
         )
@@ -30,7 +33,9 @@ async def save_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ASK_NAME
     db = await get_db(context)
     tg_id = await get_me(update)
-    await db.create_user(tg_id=tg_id, name=name, role="member")
+    admin_tg_id = context.bot_data.get("admin_tg_id")
+    role = "admin" if (admin_tg_id and tg_id == admin_tg_id) else "member"
+    await db.create_user(tg_id=tg_id, name=name, role=role)
     await update.message.reply_text(f"Готово, {name}! Теперь можно логировать: /log")
     return ConversationHandler.END
 
@@ -44,4 +49,3 @@ start_handler = ConversationHandler(
     name="start",
     persistent=False,
 )
-

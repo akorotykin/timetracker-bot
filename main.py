@@ -56,6 +56,7 @@ async def main() -> None:
     app = Application.builder().token(token).build()
     app.bot_data["db"] = db
     app.bot_data["tz"] = tz
+    app.bot_data["admin_tg_id"] = int(admin_tg_id) if admin_tg_id and admin_tg_id.isdigit() else None
 
     app.add_handler(start_handler)
     app.add_handler(log_conversation)
